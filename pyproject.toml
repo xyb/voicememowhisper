@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=65"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voicememowhisper"
+version = "0.1.0"
+description = "Watch Apple Voice Memos and transcribe recordings with WhisperKit."
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{name = "Voice Memo Whisper"}]
+dependencies = [
+    "watchdog>=3.0",
+]
+
+[project.scripts]
+voicememo-whisper = "voicememowhisper.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
