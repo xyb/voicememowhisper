@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import logging
 import sqlite3
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, List
 
 from .config import Settings, load_settings
 
@@ -80,3 +80,44 @@ def load_voice_memos(settings: Settings | None = None) -> dict[str, VoiceMemo]:
             memos[guid] = memo
         return memos
 
+
+def resolve_created_at(memo: VoiceMemo) -> datetime | None:
+    """Return the most accurate creation time available for a memo."""
+    if memo.created_at:
+        return memo.created_at.astimezone(datetime.now().astimezone().tzinfo)
+
+    try:
+        stats = memo.path.stat()
+    except FileNotFoundError:
+        return None
+
+    tz = datetime.now().astimezone().tzinfo
+    if hasattr(stats, "st_birthtime"):
+        return datetime.fromtimestamp(stats.st_birthtime, tz=tz)
+    return datetime.fromtimestamp(stats.st_mtime, tz=tz)
+
+
+def list_voice_memos(settings: Settings | None = None) -> List[VoiceMemo]:
+    """Return Voice Memo entries for every recording on disk."""
+    settings = settings or load_settings()
+    memos = load_voice_memos(settings)
+
+    results: List[VoiceMemo] = []
+    try:
+        paths = sorted(settings.recordings_dir.glob("*.m4a"))
+    except PermissionError as err:
+        raise PermissionError(
+            f"Unable to access {settings.recordings_dir}. Grant the terminal Full Disk Access."
+        ) from err
+
+    for path in paths:
+        guid = path.stem
+        memo = memos.get(guid)
+        if memo:
+            if memo.path != path:
+                memo = replace(memo, path=path)
+        else:
+            memo = VoiceMemo(guid=guid, path=path)
+        results.append(memo)
+
+    return results

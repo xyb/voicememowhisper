@@ -5,14 +5,13 @@ import queue
 import threading
 import time
 from dataclasses import replace
-from datetime import datetime
 from pathlib import Path
 from typing import Optional, Set
 
 from watchdog.observers import Observer
 
 from .config import Settings, load_settings
-from .metadata import VoiceMemo, load_voice_memos
+from .metadata import VoiceMemo, load_voice_memos, resolve_created_at
 from .paths import ensure_directories
 from .state import StateStore
 from .transcribe import WhisperTranscriber
@@ -29,16 +28,6 @@ def _sanitize_filename(value: str) -> str:
         else:
             safe_chars.append("_")
     return "".join(safe_chars).strip() or "untitled"
-
-
-def _timestamp_from_memo(memo: VoiceMemo, path: Path) -> datetime:
-    if memo.created_at:
-        return memo.created_at.astimezone(datetime.now().astimezone().tzinfo)
-
-    stats = path.stat()
-    if hasattr(stats, "st_birthtime"):
-        return datetime.fromtimestamp(stats.st_birthtime)
-    return datetime.fromtimestamp(stats.st_mtime)
 
 
 class VoiceMemoService:
@@ -171,9 +160,13 @@ class VoiceMemoService:
         self._processed.add(memo.guid)
 
     def _write_transcript(self, memo: VoiceMemo, text: str) -> None:
-        timestamp = _timestamp_from_memo(memo, memo.path)
+        timestamp = resolve_created_at(memo)
+        if timestamp is None:
+            timestamp_str = "undated"
+        else:
+            timestamp_str = timestamp.strftime("%Y-%m-%d_%H-%M-%S")
         title = memo.title or memo.guid
-        filename = f"{timestamp.strftime('%Y-%m-%d_%H-%M-%S')}_{_sanitize_filename(title)}.txt"
+        filename = f"{timestamp_str}_{_sanitize_filename(title)}.txt"
         output_path = self.settings.transcript_dir / filename
         LOGGER.info("Writing transcript to %s", output_path)
         output_path.write_text(text + "\n", encoding="utf-8")
