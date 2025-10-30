@@ -49,7 +49,7 @@ class VoiceMemoService:
         except PermissionError as err:
             raise PermissionError(
                 f"Insufficient permissions to read {self.settings.recordings_dir}. "
-                "Grant the terminal Full Disk Access in System Settings."
+                "Grant the terminal Full Disk Access (System Settings → Privacy & Security → Full Disk Access)."
             ) from err
 
         self.transcriber = WhisperTranscriber(self.settings)

@@ -6,8 +6,6 @@ import shlex
 from pathlib import Path
 from typing import Tuple
 
-DEFAULT_CONTAINER = Path.home() / "Library" / "Group Containers" / "group.com.apple.VoiceMemos.shared" / "Library" / "Application Support"
-
 
 def _env_path(key: str, default: Path) -> Path:
     raw = os.environ.get(key)
@@ -19,13 +17,51 @@ def _env_args(key: str) -> Tuple[str, ...]:
     return tuple(shlex.split(raw)) if raw else ()
 
 
+def _detect_default_paths() -> tuple[Path, Path, Path]:
+    home = Path.home()
+    candidate_roots = [
+        home / "Library" / "Group Containers" / "group.com.apple.VoiceMemos.shared",
+        home / "Library" / "Application Support" / "com.apple.voicememos",
+        home
+        / "Library"
+        / "Containers"
+        / "com.apple.VoiceMemos"
+        / "Data"
+        / "Library"
+        / "Application Support"
+        / "com.apple.voicememos",
+    ]
+
+    for root in candidate_roots:
+        recordings = root / "Recordings"
+        metadata = root / "Library" / "Application Support" / "Recents.sqlite"
+        if recordings.exists():
+            return root, recordings, metadata
+
+    fallback_root = candidate_roots[0]
+    return fallback_root, fallback_root / "Recordings", fallback_root / "Library" / "Application Support" / "Recents.sqlite"
+
+
+DEFAULT_CONTAINER, DEFAULT_RECORDINGS, DEFAULT_METADATA = _detect_default_paths()
+
+
 @dataclass(frozen=True)
 class Settings:
     """Runtime configuration for the transcription service."""
 
     container_root: Path = _env_path("VOICE_MEMO_CONTAINER", DEFAULT_CONTAINER)
-    recordings_dir: Path = _env_path("VOICE_MEMO_RECORDINGS_DIR", container_root / "Recordings")
-    metadata_db: Path = _env_path("VOICE_MEMO_METADATA_DB", container_root / "Recents.sqlite")
+    recordings_dir: Path = _env_path(
+        "VOICE_MEMO_RECORDINGS_DIR",
+        DEFAULT_RECORDINGS
+        if "VOICE_MEMO_CONTAINER" not in os.environ
+        else (container_root / "Recordings"),
+    )
+    metadata_db: Path = _env_path(
+        "VOICE_MEMO_METADATA_DB",
+        DEFAULT_METADATA
+        if "VOICE_MEMO_CONTAINER" not in os.environ
+        else (container_root / "Recents.sqlite"),
+    )
     transcript_dir: Path = _env_path(
         "VOICE_MEMO_TRANSCRIPT_DIR", Path.home() / "Documents" / "VoiceMemoTranscripts"
     )
@@ -38,4 +74,3 @@ class Settings:
 
 def load_settings() -> Settings:
     return Settings()
-
