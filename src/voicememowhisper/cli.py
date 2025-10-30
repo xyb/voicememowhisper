@@ -49,13 +49,15 @@ def _list_recordings(settings: Settings) -> int:
         return 0
 
     print("When                 | Duration | Title                           | GUID                                 | File")
-    print("-" * 120)
+    print("-" * 140)
     for memo in memos:
         created = resolve_created_at(memo)
         when = created.strftime("%Y-%m-%d %H:%M:%S") if created else "unknown"
         title = (memo.title or "").strip() or memo.guid
         duration = _format_duration(memo.duration_seconds)
-        print(f"{when:19} | {duration:8} | {title[:30]:30} | {memo.guid:36} | {memo.path}")
+        path = memo.path
+        suffix = "" if path.exists() else " (missing file)"
+        print(f"{when:19} | {duration:8} | {title[:30]:30} | {memo.guid:36} | {path}{suffix}")
 
     return 0
 

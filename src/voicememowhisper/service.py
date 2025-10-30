@@ -98,7 +98,11 @@ class VoiceMemoService:
         self._inflight.add(guid)
 
     def _refresh_metadata(self) -> None:
-        self._metadata = load_voice_memos(self.settings)
+        try:
+            self._metadata = load_voice_memos(self.settings)
+        except PermissionError as err:
+            LOGGER.warning("Metadata access denied: %s", err)
+            self._metadata = {}
 
     def _worker_loop(self) -> None:
         while not self._stop.is_set():
