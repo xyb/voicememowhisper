@@ -48,12 +48,13 @@ def _list_recordings(settings: Settings) -> int:
         logging.info("No recordings found in %s", settings.recordings_dir)
         return 0
 
+    print(f"{'When':19}  {'Duration':8}  Title")
     for memo in memos:
         created = resolve_created_at(memo)
         when = created.strftime("%Y-%m-%d %H:%M:%S") if created else "unknown"
         title = (memo.title or "").strip() or memo.guid
         duration = _format_duration(memo.duration_seconds)
-        print(f"{when}  {duration:<6}  {title}")
+        print(f"{when:19}  {duration:<8}  {title}")
 
     return 0
 
