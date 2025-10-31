@@ -48,21 +48,20 @@ def _list_recordings(settings: Settings) -> int:
         logging.info("No recordings found in %s", settings.recordings_dir)
         return 0
 
-    print("When                 | Duration | Title                           | GUID                                 | File")
-    print("-" * 140)
+    print("When                 | Duration | Title                                                  | Status")
+    print("-" * 100)
     for memo in memos:
         created = resolve_created_at(memo)
         when = created.strftime("%Y-%m-%d %H:%M:%S") if created else "unknown"
         title = (memo.title or "").strip() or memo.guid
         duration = _format_duration(memo.duration_seconds)
-        path = memo.path
-        suffix_parts = []
+        status_parts = []
         if memo.is_trashed:
-            suffix_parts.append("deleted")
-        if not path.exists():
-            suffix_parts.append("missing file")
-        suffix = f" ({', '.join(suffix_parts)})" if suffix_parts else ""
-        print(f"{when:19} | {duration:8} | {title[:30]:30} | {memo.guid:36} | {path}{suffix}")
+            status_parts.append("deleted")
+        if not memo.path.exists():
+            status_parts.append("missing file")
+        status = ", ".join(status_parts)
+        print(f"{when:19} | {duration:8} | {title[:60]:60} | {status}")
 
     return 0
 
