@@ -8,6 +8,7 @@ from dataclasses import replace
 from .config import Settings, load_settings
 from .metadata import list_voice_memos, resolve_created_at
 from .service import VoiceMemoService
+from .state import StateStore
 
 LOGGER = logging.getLogger("cli")
 
@@ -41,6 +42,17 @@ def _format_duration(seconds: float | None) -> str:
 
 
 def _list_recordings(settings: Settings) -> int:
+    processed: set[str] = set()
+    store: StateStore | None = None
+    try:
+        store = StateStore(settings.state_db)
+        processed = store.known_guids()
+    except Exception as err:
+        LOGGER.warning("Unable to read state database: %s", err)
+    finally:
+        if store is not None:
+            store.close()
+
     try:
         memos = list_voice_memos(settings)
     except Exception as err:
@@ -51,13 +63,14 @@ def _list_recordings(settings: Settings) -> int:
         logging.info("No recordings found in %s", settings.recordings_dir)
         return 0
 
-    print(f"{'When':19}  {'Duration':8}  Title")
+    print(f"{'✓':1}  {'When':19}  {'Duration':8}  Title")
     for memo in memos:
         created = resolve_created_at(memo)
         when = created.strftime("%Y-%m-%d %H:%M:%S") if created else "unknown"
         title = (memo.title or "").strip() or memo.guid
         duration = _format_duration(memo.duration_seconds)
-        print(f"{when:19}  {duration:<8}  {title}")
+        status = "✓" if memo.guid in processed else "."
+        print(f"{status:1}  {when:19}  {duration:<8}  {title}")
 
     return 0
 
