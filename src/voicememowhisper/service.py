@@ -159,6 +159,10 @@ class VoiceMemoService:
             LOGGER.debug("Skipping already processed memo %s", memo.guid)
             return
 
+        if memo.is_trashed:
+            LOGGER.info("Skipping trashed memo %s", memo.guid)
+            return
+
         text = self.transcriber.transcribe(path)
         self._write_transcript(memo, text)
         self._processed.add(memo.guid)

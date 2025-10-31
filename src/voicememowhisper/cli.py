@@ -56,7 +56,12 @@ def _list_recordings(settings: Settings) -> int:
         title = (memo.title or "").strip() or memo.guid
         duration = _format_duration(memo.duration_seconds)
         path = memo.path
-        suffix = "" if path.exists() else " (missing file)"
+        suffix_parts = []
+        if memo.is_trashed:
+            suffix_parts.append("deleted")
+        if not path.exists():
+            suffix_parts.append("missing file")
+        suffix = f" ({', '.join(suffix_parts)})" if suffix_parts else ""
         print(f"{when:19} | {duration:8} | {title[:30]:30} | {memo.guid:36} | {path}{suffix}")
 
     return 0

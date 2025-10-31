@@ -5,13 +5,14 @@ from datetime import datetime, timedelta, timezone
 import logging
 import sqlite3
 from pathlib import Path
-from typing import Iterable, List, Sequence
+from typing import Iterable, List, Sequence, Optional, Dict
 
 from .config import Settings, load_settings
 
 LOGGER = logging.getLogger(__name__)
 MAC_EPOCH = datetime(2001, 1, 1, tzinfo=timezone.utc)
 GUID_COLUMNS: Sequence[str] = (
+    "ZUNIQUEID",
     "ZUUID",
     "ZCLOUDUUID",
     "ZIDENTIFIER",
@@ -19,9 +20,11 @@ GUID_COLUMNS: Sequence[str] = (
     "Z_PK",
 )
 TITLE_COLUMNS: Sequence[str] = (
-    "ZTITLE",
-    "ZDISPLAYTITLE",
+    "ZENCRYPTEDTITLE",
     "ZCUSTOMLABEL",
+    "ZCUSTOMLABELFORSORTING",
+    "ZDISPLAYTITLE",
+    "ZTITLE",
     "ZNAME",
     "ZGENERICNAME",
 )
@@ -34,6 +37,7 @@ DATE_COLUMNS: Sequence[str] = (
 )
 DURATION_COLUMNS: Sequence[str] = (
     "ZDURATION",
+    "ZLOCALDURATION",
     "ZCACHEDDURATION",
     "ZTRIMMEDDURATION",
     "ZCACHEDTRIMMEDDURATION",
@@ -61,7 +65,20 @@ TRASH_COLUMNS: Sequence[str] = (
     "ZISPENDINGDELETE",
     "ZINTRASH",
     "ZNEEDSDELETE",
+    "ZEVICTIONDATE",
 )
+REFERENCE_COLUMNS: Sequence[str] = (
+    "ZMETADATA",
+    "ZTITLEMETADATA",
+    "ZCACHEDMETADATA",
+    "ZCACHEDTITLEMETADATA",
+    "ZRECENTITEM",
+    "ZRECENTSITEM",
+    "ZNAMEITEM",
+)
+
+_TABLE_COLUMN_CACHE: Dict[tuple[int, str], set[str]] = {}
+_TABLES_WITH_TITLES_CACHE: Dict[int, List[str]] = {}
 
 
 @dataclass(frozen=True)
@@ -94,22 +111,62 @@ def _truthy(value) -> bool:
     return bool(value)
 
 
+def _normalize_value(value):
+    if isinstance(value, memoryview):
+        value = value.tobytes()
+    if isinstance(value, bytes):
+        for encoding in ("utf-8", "utf-16-le", "utf-16-be"):
+            try:
+                decoded = value.decode(encoding)
+                return decoded.replace("\x00", "").strip()
+            except UnicodeDecodeError:
+                continue
+        return value.decode("utf-8", errors="ignore").replace("\x00", "").strip()
+    if isinstance(value, str):
+        return value.strip()
+    return value
+
+
 def _pick(row: sqlite3.Row, candidates: Iterable[str]):
     keys = row.keys()
     for name in candidates:
         if name in keys:
             value = row[name]
             if value not in (None, ""):
-                return value
+                normalized = _normalize_value(value)
+                if normalized in (None, ""):
+                    continue
+                return normalized
     return None
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    key = (id(conn), table)
+    cached = _TABLE_COLUMN_CACHE.get(key)
+    if cached is not None:
+        return cached
     try:
         rows = conn.execute(f"PRAGMA table_info('{table}')")
     except sqlite3.Error:  # pragma: no cover - corrupt db
-        return set()
-    return {row[1] for row in rows}
+        columns = set()
+    else:
+        columns = {row[1] for row in rows}
+    _TABLE_COLUMN_CACHE[key] = columns
+    return columns
+
+
+def _tables_with_titles(conn: sqlite3.Connection) -> List[str]:
+    cache = _TABLES_WITH_TITLES_CACHE.get(id(conn))
+    if cache is not None:
+        return cache
+    tables = [row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+    result: List[str] = []
+    for name in tables:
+        cols = _table_columns(conn, name)
+        if "Z_PK" in cols and any(col in cols for col in TITLE_COLUMNS):
+            result.append(name)
+    _TABLES_WITH_TITLES_CACHE[id(conn)] = result
+    return result
 
 
 def _find_record_table(conn: sqlite3.Connection) -> str | None:
@@ -119,7 +176,7 @@ def _find_record_table(conn: sqlite3.Connection) -> str | None:
         "ZRECORDING",
         "ZCLOUDRECORDINGS",
     ]
-    tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    tables = set(_tables_with_titles(conn)) | {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     for name in priority:
         if name in tables:
             return name
@@ -137,7 +194,7 @@ def _resolve_path(row: sqlite3.Row, settings: Settings, guid: str) -> Path:
     keys = row.keys()
     for name in PATH_COLUMNS:
         if name in keys:
-            value = row[name]
+            value = _normalize_value(row[name])
             if isinstance(value, str) and value.strip():
                 candidate = value.strip()
                 if candidate.startswith("file://"):
@@ -147,8 +204,40 @@ def _resolve_path(row: sqlite3.Row, settings: Settings, guid: str) -> Path:
                 path = Path(candidate)
                 if path.is_absolute():
                     return path
-                return settings.container_root / candidate.lstrip("/")
+                parts = path.parts
+                if parts and parts[0].lower() == "recordings":
+                    return settings.container_root / Path(*parts)
+                return settings.recordings_dir / path
     return settings.recordings_dir / f"{guid}.m4a"
+
+
+def _resolve_related_title(conn: sqlite3.Connection, row: sqlite3.Row) -> str | None:
+    keys = row.keys()
+    tables = _tables_with_titles(conn)
+    if not tables:
+        return None
+
+    for ref in REFERENCE_COLUMNS:
+        if ref not in keys:
+            continue
+        ref_value = row[ref]
+        if ref_value in (None, 0):
+            continue
+        try:
+            ref_id = int(ref_value)
+        except (TypeError, ValueError):
+            continue
+        for table in tables:
+            try:
+                candidate = conn.execute(f"SELECT * FROM {table} WHERE Z_PK = ? LIMIT 1", (ref_id,)).fetchone()
+            except sqlite3.Error:
+                continue
+            if not candidate:
+                continue
+            title = _pick(candidate, TITLE_COLUMNS)
+            if title:
+                return title
+    return None
 
 
 def load_voice_memos(settings: Settings | None = None) -> dict[str, VoiceMemo]:
@@ -156,6 +245,9 @@ def load_voice_memos(settings: Settings | None = None) -> dict[str, VoiceMemo]:
     settings = settings or load_settings()
     db_path = settings.metadata_db
     fallback = settings.legacy_metadata_db
+
+    _TABLE_COLUMN_CACHE.clear()
+    _TABLES_WITH_TITLES_CACHE.clear()
 
     if not db_path.exists():
         if fallback and fallback.exists():
@@ -212,6 +304,9 @@ def load_voice_memos(settings: Settings | None = None) -> dict[str, VoiceMemo]:
             created_value = _pick(row, DATE_COLUMNS)
             duration_value = _pick(row, DURATION_COLUMNS)
 
+            if not title_value:
+                title_value = _resolve_related_title(conn, row)
+
             memo = VoiceMemo(
                 guid=guid,
                 path=path,
@@ -220,7 +315,7 @@ def load_voice_memos(settings: Settings | None = None) -> dict[str, VoiceMemo]:
                 duration_seconds=float(duration_value) if duration_value is not None else None,
                 is_trashed=trashed,
             )
-            memos[guid] = memo
+            memos[memo.path.stem] = memo
         return memos
 
 
@@ -246,7 +341,7 @@ def list_voice_memos(settings: Settings | None = None) -> List[VoiceMemo]:
     memos = load_voice_memos(settings)
 
     results: List[VoiceMemo] = []
-    seen: set[str] = set()
+    seen_paths: set[str] = set()
     try:
         paths = sorted(settings.recordings_dir.glob("*.m4a"))
     except PermissionError as err:
@@ -263,17 +358,18 @@ def list_voice_memos(settings: Settings | None = None) -> List[VoiceMemo]:
                 memos[guid] = memo
         else:
             memo = VoiceMemo(guid=guid, path=path)
-        if not memo.is_trashed and guid not in seen:
+        if not memo.is_trashed and guid not in seen_paths:
             results.append(memo)
-            seen.add(guid)
+            seen_paths.add(guid)
 
     # Include metadata-only entries (for recently deleted files that are still present in app listing).
     for memo in memos.values():
         if memo.is_trashed:
             continue
-        if memo.guid not in seen:
+        stem = memo.path.stem
+        if stem not in seen_paths:
             results.append(memo)
-            seen.add(memo.guid)
+            seen_paths.add(stem)
 
     results.sort(key=lambda m: resolve_created_at(m) or datetime.fromtimestamp(0), reverse=True)
     return results

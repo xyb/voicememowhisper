@@ -48,7 +48,7 @@ def _detect_default_paths() -> tuple[Path, Path, Path, Optional[Path]]:
 
     for root in candidate_roots:
         recordings = root / "Recordings"
-        cloud_db = root / "Library" / "Application Support" / "CloudRecordings.db"
+        cloud_db = root / "Recordings" / "CloudRecordings.db"
         recents_db = root / "Library" / "Application Support" / "Recents.sqlite"
         if _safe_exists(recordings):
             if _safe_exists(cloud_db):
@@ -59,7 +59,7 @@ def _detect_default_paths() -> tuple[Path, Path, Path, Optional[Path]]:
             return root, recordings, cloud_db, recents_db
 
     fallback_root = candidate_roots[0]
-    fallback_cloud = fallback_root / "Library" / "Application Support" / "CloudRecordings.db"
+    fallback_cloud = fallback_root / "Recordings" / "CloudRecordings.db"
     metadata = fallback_cloud if _safe_exists(fallback_cloud) else fallback_root / "Library" / "Application Support" / "Recents.sqlite"
     legacy = (fallback_root / "Library" / "Application Support" / "Recents.sqlite") if metadata != fallback_root / "Library" / "Application Support" / "Recents.sqlite" else None
     return fallback_root, fallback_root / "Recordings", metadata, legacy
@@ -78,18 +78,18 @@ def _default_recordings_dir() -> Path:
 def _default_metadata_db() -> Path:
     container = os.environ.get("VOICE_MEMO_CONTAINER")
     if container:
-        root = Path(container).expanduser() / "Library" / "Application Support"
-        cloud = root / "CloudRecordings.db"
-        return cloud if _safe_exists(cloud) else root / "Recents.sqlite"
+        root = Path(container).expanduser()
+        cloud = root / "Recordings" / "CloudRecordings.db"
+        return cloud if _safe_exists(cloud) else root / "Library" / "Application Support" / "Recents.sqlite"
     return DEFAULT_METADATA
 
 
 def _default_legacy_metadata_db() -> Optional[Path]:
     container = os.environ.get("VOICE_MEMO_CONTAINER")
     if container:
-        root = Path(container).expanduser() / "Library" / "Application Support"
-        cloud = root / "CloudRecordings.db"
-        recents = root / "Recents.sqlite"
+        root = Path(container).expanduser()
+        cloud = root / "Recordings" / "CloudRecordings.db"
+        recents = root / "Library" / "Application Support" / "Recents.sqlite"
         if _safe_exists(cloud) and _safe_exists(recents):
             return recents
         if _safe_exists(recents) and not _safe_exists(cloud):
