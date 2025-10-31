@@ -53,16 +53,7 @@ def _list_recordings(settings: Settings) -> int:
         when = created.strftime("%Y-%m-%d %H:%M:%S") if created else "unknown"
         title = (memo.title or "").strip() or memo.guid
         duration = _format_duration(memo.duration_seconds)
-        status_parts = []
-        if memo.is_trashed:
-            status_parts.append("deleted")
-        if not memo.path.exists():
-            status_parts.append("missing file")
-        status = ", ".join(status_parts)
-        parts = [when, duration, title]
-        if status:
-            parts.append(status)
-        print("  ".join(part for part in parts if part))
+        print(f"{when}  {duration:<6}  {title}")
 
     return 0
 
