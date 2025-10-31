@@ -9,11 +9,14 @@ from .config import Settings, load_settings
 from .metadata import list_voice_memos, resolve_created_at
 from .service import VoiceMemoService
 
+LOGGER = logging.getLogger("cli")
+
 
 def _configure_logging(level: str) -> None:
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+        format="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%H:%M:%S",
     )
 
 
@@ -41,7 +44,7 @@ def _list_recordings(settings: Settings) -> int:
     try:
         memos = list_voice_memos(settings)
     except Exception as err:
-        logging.getLogger(__name__).error("Failed to list recordings: %s", err)
+        LOGGER.error("Failed to list recordings: %s", err)
         return 1
 
     if not memos:
@@ -79,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         settings = build_settings(args)
     except Exception as err:
-        logging.getLogger(__name__).error("%s", err)
+        LOGGER.error("%s", err)
         return 1
 
     if args.list:
@@ -88,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         service = VoiceMemoService(settings)
     except Exception as err:
-        logging.getLogger(__name__).error("%s", err)
+        LOGGER.error("%s", err)
         return 1
 
     try:

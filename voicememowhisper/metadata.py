@@ -9,7 +9,7 @@ from typing import Iterable, List, Sequence, Optional, Dict
 
 from .config import Settings, load_settings
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger("metadata")
 MAC_EPOCH = datetime(2001, 1, 1, tzinfo=timezone.utc)
 GUID_COLUMNS: Sequence[str] = (
     "ZUNIQUEID",

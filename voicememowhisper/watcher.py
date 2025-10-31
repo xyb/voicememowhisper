@@ -7,7 +7,7 @@ from typing import Callable
 from watchdog.events import FileSystemEvent, FileSystemEventHandler
 from watchdog.observers import Observer
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger("watcher")
 
 
 class RecordingHandler(FileSystemEventHandler):
@@ -29,7 +29,6 @@ class RecordingHandler(FileSystemEventHandler):
         path = Path(event.src_path)
         if path.suffix.lower() != ".m4a":
             return
-        LOGGER.debug("Recording event detected for %s", path)
         self._callback(path)
 
 
@@ -40,4 +39,3 @@ def start_watcher(directory: Path, callback: Callable[[Path], None]) -> Observer
     observer.start()
     LOGGER.info("Watching %s for new recordings", directory)
     return observer
-

@@ -8,7 +8,7 @@ from typing import Optional
 
 from .config import Settings, load_settings
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger("transcribe")
 
 
 class WhisperTranscriber:
@@ -31,9 +31,13 @@ class WhisperTranscriber:
             "Install via Homebrew (`brew install whisperkit-cli`) or set VOICE_MEMO_WHISPERKIT_CLI."
         )
 
-    def transcribe(self, audio_path: Path) -> str:
+    def transcribe(self, audio_path: Path, *, label: str | None = None) -> str:
+        display = (label or audio_path.stem or audio_path.name).strip()
+        if not display:
+            display = audio_path.stem or audio_path.name
+
         if not audio_path.exists():
-            raise FileNotFoundError(f"Audio file not found: {audio_path}")
+            raise FileNotFoundError(f"Audio file not found: {display}")
 
         cmd = [
             self._cli,
@@ -50,16 +54,15 @@ class WhisperTranscriber:
         if self.settings.whisperkit_extra_args:
             cmd.extend(self.settings.whisperkit_extra_args)
 
-        LOGGER.info("Transcribing %s with WhisperKit (%s)", audio_path, self.settings.whisperkit_model)
+        LOGGER.info("Transcribing %s with WhisperKit (%s)", display, self.settings.whisperkit_model)
 
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             LOGGER.error("WhisperKit CLI failed (%s): %s", result.returncode, result.stderr.strip())
             raise RuntimeError(
-                f"WhisperKit CLI transcription failed for {audio_path} "
+                f"WhisperKit CLI transcription failed for {display} "
                 f"(exit code {result.returncode}). See logs for details."
             )
 
         text = result.stdout.strip()
         return text
-
