@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import os
 import shlex
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Literal, Optional, Tuple
 
 
 def _safe_exists(path: Path) -> bool:
@@ -29,6 +29,20 @@ def _optional_env_path(key: str, default: Path | None) -> Path | None:
     if raw:
         return Path(raw).expanduser()
     return default
+
+
+ProcessingOrder = Literal["newest-first", "oldest-first"]
+
+
+def parse_processing_order(value: str | None, default: ProcessingOrder = "newest-first") -> ProcessingOrder:
+    if not value:
+        return default
+    normalized = value.strip().lower()
+    if normalized in ("newest-first", "newest", "recent-first", "desc"):
+        return "newest-first"
+    if normalized in ("oldest-first", "oldest", "asc"):
+        return "oldest-first"
+    raise ValueError("Invalid processing order. Use 'newest-first' or 'oldest-first'.")
 
 
 def _detect_default_paths() -> tuple[Path, Path, Path, Optional[Path]]:
@@ -114,6 +128,7 @@ class Settings:
     whisperkit_model: str = os.environ.get("VOICE_MEMO_WHISPERKIT_MODEL", "large-v3-v20240930_turbo")
     whisperkit_extra_args: Tuple[str, ...] = _env_args("VOICE_MEMO_WHISPERKIT_ARGS")
     language: str | None = os.environ.get("VOICE_MEMO_LANGUAGE")
+    processing_order: ProcessingOrder = parse_processing_order(os.environ.get("VOICE_MEMO_PROCESSING_ORDER"))
 
 
 def load_settings() -> Settings:

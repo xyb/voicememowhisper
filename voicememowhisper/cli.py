@@ -23,12 +23,15 @@ def _configure_logging(level: str) -> None:
 
 def build_settings(args: argparse.Namespace) -> Settings:
     settings = load_settings()
-    if args.model or args.language:
-        settings = replace(
-            settings,
-            whisperkit_model=args.model or settings.whisperkit_model,
-            language=args.language or settings.language,
-        )
+    overrides = {}
+    if args.model:
+        overrides["whisperkit_model"] = args.model
+    if args.language:
+        overrides["language"] = args.language
+    if args.newest_first is not None:
+        overrides["processing_order"] = "newest-first" if args.newest_first else "oldest-first"
+    if overrides:
+        settings = replace(settings, **overrides)
     return settings
 
 
@@ -87,6 +90,12 @@ def main(argv: list[str] | None = None) -> int:
         "--log-level",
         default="INFO",
         help="Logging level (DEBUG, INFO, WARNING...). Default: INFO.",
+    )
+    parser.add_argument(
+        "--newest-first",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Process backlog newest first (disable for oldest first). Default: true.",
     )
 
     args = parser.parse_args(argv)

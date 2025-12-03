@@ -5,6 +5,7 @@ import queue
 import threading
 import time
 import os
+from datetime import datetime
 from dataclasses import replace
 from pathlib import Path
 from typing import Optional, Set
@@ -36,6 +37,7 @@ class VoiceMemoService:
 
     def __init__(self, settings: Optional[Settings] = None) -> None:
         self.settings = ensure_directories(settings or load_settings())
+        self.processing_order = self.settings.processing_order
 
         if not self.settings.recordings_dir.exists():
             raise FileNotFoundError(
@@ -88,8 +90,24 @@ class VoiceMemoService:
 
     def enqueue_existing(self) -> None:
         self._refresh_metadata()
-        for path in sorted(self.settings.recordings_dir.glob("*.m4a")):
-            self.enqueue_path(path)
+        try:
+            paths = list(self.settings.recordings_dir.glob("*.m4a"))
+        except PermissionError as err:
+            LOGGER.warning("Unable to read recordings directory: %s", err)
+            return
+
+        memos = []
+        for path in paths:
+            memo = self._memo_for_path(path)
+            memos.append(memo)
+
+        memos.sort(
+            key=lambda memo: resolve_created_at(memo) or datetime.fromtimestamp(0),
+            reverse=self.processing_order == "newest-first",
+        )
+
+        for memo in memos:
+            self.enqueue_path(memo.path)
 
     def enqueue_path(self, path: Path) -> None:
         guid = path.stem
