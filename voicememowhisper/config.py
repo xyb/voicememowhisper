@@ -24,8 +24,9 @@ def _env_args(key: str) -> Tuple[str, ...]:
     return tuple(shlex.split(raw)) if raw else ()
 
 
-DEFAULT_ARCHIVE_PATH = Path.home() / "Documents" / "VoiceMemoArchives"
-DEFAULT_TRANSCRIPT_PATH = Path.home() / "Documents" / "VoiceMemoTranscripts"
+DEFAULT_BASE_PATH = Path.home() / "Documents" / "VoiceMemoWhisper"
+DEFAULT_ARCHIVE_PATH = DEFAULT_BASE_PATH / "Audio"
+DEFAULT_TRANSCRIPT_PATH = DEFAULT_BASE_PATH / "Transcripts"
 
 def _optional_env_path(key: str, default: Path | None) -> Path | None:
     raw = os.environ.get(key)
