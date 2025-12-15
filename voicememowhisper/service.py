@@ -263,7 +263,17 @@ class VoiceMemoService:
 
         # Update State (only if we have at least a transcript, which we should)
         if transcript_path:
-            self.state.mark_processed(memo.guid, transcript_path, archived_path)
+            created_at = resolve_created_at(memo)
+            created_at_str = created_at.isoformat() if created_at else None
+            
+            self.state.mark_processed(
+                guid=memo.guid,
+                transcript_path=transcript_path,
+                archived_path=archived_path,
+                title=memo.title,
+                duration=memo.duration_seconds,
+                created_at=created_at_str
+            )
 
     def _archive_memo(self, memo: VoiceMemo, transcript_filename: str) -> Optional[Path]:
         if not self.settings.archive_dir:

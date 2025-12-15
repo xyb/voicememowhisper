@@ -3,6 +3,9 @@ from __future__ import annotations
 import argparse
 import logging
 import time
+import shutil
+import re
+from datetime import datetime
 from dataclasses import replace
 from pathlib import Path
 
@@ -56,13 +59,32 @@ def _format_duration(seconds: float | None) -> str:
     return f"{rem}s"
 
 
+def _parse_filename(path: Path) -> tuple[str | None, str | None]:
+    """Parse timestamp and title from filename."""
+    stem = path.stem
+    # Format: YYYY-MM-DD_HH-MM-SS_Title
+    match = re.match(r"^(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})_(.*)$", stem)
+    if match:
+        timestamp_str, title = match.groups()
+        try:
+            dt = datetime.strptime(timestamp_str, "%Y-%m-%d_%H-%M-%S")
+            return dt.isoformat(), title
+        except ValueError:
+            pass
+    
+    if stem.startswith("undated_"):
+        return None, stem[8:]
+    
+    return None, stem
+
+
 def _list_recordings(settings: Settings) -> int:
     store: StateStore | None = None
-    state_map: dict[str, tuple[Optional[Path], Optional[Path]]] = {}
+    db_rows: list[dict] = []
+    
     try:
         store = StateStore(settings.state_db)
-        for guid in store.known_guids():
-            state_map[guid] = store.get_state(guid)
+        db_rows = [dict(r) for r in store.get_all_processed()]
     except Exception as err:
         LOGGER.warning("Unable to read state database: %s", err)
     finally:
@@ -70,29 +92,147 @@ def _list_recordings(settings: Settings) -> int:
             store.close()
 
     try:
-        memos = list_voice_memos(settings)
+        source_memos = list_voice_memos(settings)
     except Exception as err:
         LOGGER.error("Failed to list recordings: %s", err)
         return 1
 
-    if not memos:
-        logging.info("No recordings found in %s", settings.recordings_dir)
+    # Data structure to hold merged items
+    # Key: GUID (if known) or Filename Stem (for orphans)
+    all_items: dict[str, dict] = {}
+
+    def get_item(key: str) -> dict:
+        if key not in all_items:
+            all_items[key] = {
+                'key': key,
+                'created_at': None,
+                'duration': None,
+                'title': None,
+                't': False, 'a': False, 's': False,
+            }
+        return all_items[key]
+
+    # Map filenames to GUIDs based on DB to link files back to known records
+    filename_to_guid: dict[str, str] = {}
+    stem_to_guid: dict[str, str] = {}
+    db_records_map: dict[str, dict] = {}
+    
+    for record in db_rows:
+        guid = record['guid']
+        db_records_map[guid] = record
+        if record['transcript_path']:
+            p = Path(record['transcript_path'])
+            filename_to_guid[p.name] = guid
+            stem_to_guid[p.stem] = guid
+        if record['archived_path']:
+            p = Path(record['archived_path'])
+            filename_to_guid[p.name] = guid
+            stem_to_guid[p.stem] = guid
+
+    # --- Phase 1: Process Source Memos (App) ---
+    for memo in source_memos:
+        item = get_item(memo.guid)
+        item['created_at'] = resolve_created_at(memo)
+        item['duration'] = memo.duration_seconds
+        item['title'] = (memo.title or "").strip() or memo.guid
+        item['s'] = True
+
+    # --- Phase 2: Scan Directories for Files ---
+    def process_file(path: Path, type_key: str):
+        filename = path.name
+        stem = path.stem
+        
+        # Try exact filename match first, then stem match
+        guid = filename_to_guid.get(filename) or stem_to_guid.get(stem)
+        
+        if guid:
+            # Matches a known DB record
+            item = get_item(guid)
+            item[type_key] = True
+        else:
+            # Orphan file
+            item = get_item(stem)
+            item[type_key] = True
+            
+        # Extract metadata from filename if missing
+        parsed_dt_str, parsed_title = _parse_filename(path)
+        if not item['created_at']:
+            if parsed_dt_str:
+                try:
+                    item['created_at'] = datetime.fromisoformat(parsed_dt_str)
+                except ValueError:
+                    pass
+        
+        # Fallback to file mtime if still missing
+        if not item['created_at']:
+            item['created_at'] = datetime.fromtimestamp(path.stat().st_mtime)
+        
+        if not item['title']:
+            item['title'] = parsed_title or stem
+
+    if settings.transcript_dir.exists():
+        for f in settings.transcript_dir.glob("*.txt"):
+            process_file(f, 't')
+
+    if settings.archive_dir and settings.archive_dir.exists():
+        for f in settings.archive_dir.glob("*.m4a"):
+            process_file(f, 'a')
+
+    # --- Phase 3: Enrich with DB Metadata ---
+    # Only for items that already exist (from App or Files)
+    for guid, record in db_records_map.items():
+        if guid in all_items:
+            item = all_items[guid]
+            # Backfill if missing
+            if not item['created_at'] and record['created_at']:
+                try: item['created_at'] = datetime.fromisoformat(record['created_at'])
+                except ValueError: pass
+            
+            if not item['duration'] and record['duration']:
+                item['duration'] = record['duration']
+                
+            if not item['title'] and record['title']:
+                item['title'] = record['title']
+
+    # --- Phase 4: Finalize and Sort ---
+    display_list = list(all_items.values())
+    
+    if not display_list:
+        logging.info("No recordings found.")
         return 0
 
+    def to_naive(dt: datetime | None) -> datetime:
+        if dt is None:
+            return datetime.min
+        return dt.replace(tzinfo=None)
+
+    # Sort items by string representation of naive datetime for stability
+    def sort_key(x):
+        dt = x['created_at']
+        if dt is None:
+            return ""
+        return str(to_naive(dt))
+
+    display_list.sort(key=sort_key, reverse=True)
+    
+    # Print header
     print("/-- Transcribed")
-    print("|/- Archived")
-    print(f"{'T':<1}{'A':<1}  {'When':19}  {'Duration':8}  Title")
-    for memo in memos:
-        created = resolve_created_at(memo)
-        when = created.strftime("%Y-%m-%d %H:%M:%S") if created else "unknown"
-        title = (memo.title or "").strip() or memo.guid
-        duration = _format_duration(memo.duration_seconds)
+    print("|/-- Archived")
+    print("||/-- Source Exists")
+    print(f"{'T':<1}{'A':<1}{'S':<1}  {'When':19}  {'Duration':8}  Title")
 
-        transcript_path, archived_path = state_map.get(memo.guid, (None, None))
-        transcribed_status = "✓" if transcript_path else "."
-        archived_status = "✓" if archived_path else "."
+    for item in display_list:
+        if not (item['s'] or item['t'] or item['a']):
+            continue
 
-        print(f"{transcribed_status:<1}{archived_status:<1}  {when:19}  {duration:<8}  {title}")
+        when = item['created_at'].strftime("%Y-%m-%d %H:%M:%S") if item['created_at'] else "unknown"
+        duration_str = _format_duration(item['duration'])
+        
+        t_char = "✓" if item['t'] else "."
+        a_char = "✓" if item['a'] else "."
+        s_char = "✓" if item['s'] else "x"
+        
+        print(f"{t_char:<1}{a_char:<1}{s_char:<1}  {when:19}  {duration_str:<8}  {item['title'] or item['key']}")
 
     return 0
 

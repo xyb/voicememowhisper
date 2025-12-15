@@ -20,3 +20,27 @@ The history follows Conventional Commits (`type: short summary` such as `chore: 
 
 ## Security & Configuration Tips
 Grant the terminal Full Disk Access before running the watcher, and never commit real Voice Memo data or transcripts. Prefer environment variables (`VOICE_MEMO_RECORDINGS_DIR`, `VOICE_MEMO_METADATA_DB`, `VOICE_MEMO_TRANSCRIPT_DIR`, `VOICE_MEMO_STATE_DB`, `VOICE_MEMO_WHISPERKIT_MODEL`) over hard-coded paths, and document overrides inside the PR when they change default behaviour.
+
+## Interaction Retrospective (2025-12-15)
+
+### Critical Errors & Lessons Learned
+
+1.  **Verification Failure (Most Critical)**
+    *   **Error**: Committed code multiple times without running the actual shell command (`python -m voicememowhisper --list`) to verify the output. Relied on "mental compilation" which failed to catch `IndentationError`, `NameError`, and logical bugs (sorting, duplication).
+    *   **Lesson**: **Always execute the code** in the shell to verify the fix *before* committing. "I think it works" is not enough. Proof is required.
+
+2.  **Git Hygiene**
+    *   **Error**: Habitually used `git add .` which staged temporary files like `commit_msg.txt`, requiring multiple `git commit --amend` cleanups.
+    *   **Lesson**: Never use `git add .` blindly. Use `git add <file>` for specific files, or ensure the workspace is clean (e.g., delete temp files immediately after use).
+
+3.  **Tool Usage (Text Replacement)**
+    *   **Error**: Failed multiple `replace` calls because the `old_string` context didn't match the actual file state (often due to previous edits or indentation).
+    *   **Lesson**: When in doubt about the file state, use `read_file` *immediately* before `replace` to get the exact content. Do not guess the indentation.
+
+4.  **Debugging Strategy**
+    *   **Error**: Wasted time theorizing about `datetime` comparisons instead of simply printing the data types and values.
+    *   **Lesson**: When data processing yields wrong results, **inspect the data** (print types and values) immediately. Don't guess; look.
+
+5.  **Requirement Understanding**
+    *   **Error**: Initially misunderstood the requirement for "source deleted" items, thinking DB was the only source of truth, whereas the user wanted the File System to be the ultimate truth for existence, with DB as metadata enrichment.
+    *   **Lesson**: Clarify the "Source of Truth" early in data synchronization tasks.

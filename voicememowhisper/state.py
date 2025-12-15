@@ -20,16 +20,26 @@ class StateStore:
                 guid TEXT PRIMARY KEY,
                 transcript_path TEXT NOT NULL,
                 archived_path TEXT, -- New column for archived file path
+                title TEXT,
+                duration REAL,
+                created_at TEXT,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             """
         )
-        # Add archived_path column if it doesn't exist (for backward compatibility with older SQLite)
-        # SQLite < 3.35.0 does not support ADD COLUMN IF NOT EXISTS
+        # Add columns if they don't exist (for backward compatibility)
         cursor = self._conn.execute("PRAGMA table_info(processed)")
         columns = [row[1] for row in cursor.fetchall()]
+        
         if "archived_path" not in columns:
             self._conn.execute("ALTER TABLE processed ADD COLUMN archived_path TEXT")
+        if "title" not in columns:
+            self._conn.execute("ALTER TABLE processed ADD COLUMN title TEXT")
+        if "duration" not in columns:
+            self._conn.execute("ALTER TABLE processed ADD COLUMN duration REAL")
+        if "created_at" not in columns:
+            self._conn.execute("ALTER TABLE processed ADD COLUMN created_at TEXT")
+            
         self._conn.commit()
 
     def close(self) -> None:
@@ -46,18 +56,36 @@ class StateStore:
             cursor = self._conn.execute("SELECT guid FROM processed;")
             return {row[0] for row in cursor.fetchall()}
 
-    def mark_processed(self, guid: str, transcript_path: Path, archived_path: Optional[Path] = None) -> None:
+    def mark_processed(
+        self, 
+        guid: str, 
+        transcript_path: Path, 
+        archived_path: Optional[Path] = None,
+        title: Optional[str] = None,
+        duration: Optional[float] = None,
+        created_at: Optional[str] = None
+    ) -> None:
         with self._lock:
             self._conn.execute(
                 """
-            INSERT INTO processed (guid, transcript_path, archived_path)
-            VALUES (?, ?, ?)
+            INSERT INTO processed (guid, transcript_path, archived_path, title, duration, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(guid) DO UPDATE SET
                 transcript_path = excluded.transcript_path,
                 archived_path = excluded.archived_path,
+                title = excluded.title,
+                duration = excluded.duration,
+                created_at = excluded.created_at,
                 updated_at = CURRENT_TIMESTAMP;
             """,
-                (guid, str(transcript_path), str(archived_path) if archived_path else None),
+                (
+                    guid, 
+                    str(transcript_path), 
+                    str(archived_path) if archived_path else None,
+                    title,
+                    duration,
+                    created_at
+                ),
             )
             self._conn.commit()
 
@@ -73,4 +101,13 @@ class StateStore:
                 archived_path = Path(row[1]) if row[1] else None
                 return transcript_path, archived_path
             return None, None
+
+    def get_all_processed(self) -> list[dict]:
+        """Retrieve all processed records with metadata."""
+        with self._lock:
+            self._conn.row_factory = sqlite3.Row
+            cursor = self._conn.execute("SELECT * FROM processed")
+            rows = [dict(row) for row in cursor.fetchall()]
+            self._conn.row_factory = None # Reset row factory
+            return rows
 
