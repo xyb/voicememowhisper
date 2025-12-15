@@ -24,6 +24,8 @@ def _env_args(key: str) -> Tuple[str, ...]:
     return tuple(shlex.split(raw)) if raw else ()
 
 
+DEFAULT_ARCHIVE_PATH = Path.home() / "Documents" / "VoiceMemoArchives"
+
 def _optional_env_path(key: str, default: Path | None) -> Path | None:
     raw = os.environ.get(key)
     if raw:
@@ -123,6 +125,8 @@ class Settings:
     transcript_dir: Path = _env_path(
         "VOICE_MEMO_TRANSCRIPT_DIR", Path.home() / "Documents" / "VoiceMemoTranscripts"
     )
+    archive_dir: Optional[Path] = _optional_env_path("VOICE_MEMO_ARCHIVE_DIR", DEFAULT_ARCHIVE_PATH)
+    archive_enabled: bool = False
     state_db: Path = _env_path("VOICE_MEMO_STATE_DB", Path.home() / ".voice-memo-whisper" / "state.sqlite")
     whisperkit_cli: str = os.environ.get("VOICE_MEMO_WHISPERKIT_CLI", "whisperkit-cli")
     whisperkit_model: str = os.environ.get("VOICE_MEMO_WHISPERKIT_MODEL", "large-v3-v20240930_turbo")

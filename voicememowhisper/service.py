@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import shutil
 import threading
 import time
 import os
@@ -45,6 +46,10 @@ class VoiceMemoService:
                 "Open the Voice Memos app or adjust VOICE_MEMO_RECORDINGS_DIR."
             )
 
+        if self.settings.archive_enabled and self.settings.archive_dir and not self.settings.archive_dir.exists():
+            self.settings.archive_dir.mkdir(parents=True, exist_ok=True)
+            LOGGER.info("Created archive directory at %s", self.settings.archive_dir)
+
         try:
             next(self.settings.recordings_dir.glob("*.m4a"))
         except StopIteration:
@@ -61,7 +66,6 @@ class VoiceMemoService:
         self._worker_thread: Optional[threading.Thread] = None
         self._observer: Optional[Observer] = None
         self.state = StateStore(self.settings.state_db)
-        self._processed: Set[str] = set(self.state.known_guids())
         self._metadata: dict[str, VoiceMemo] = {}
         self._inflight: Set[str] = set()
 
@@ -111,10 +115,20 @@ class VoiceMemoService:
 
     def enqueue_path(self, path: Path) -> None:
         guid = path.stem
-        if guid in self._processed or guid in self._inflight:
+        if guid in self._inflight:
             return
+
+        # Check state to decide if we need to process
+        transcript_path, archived_path = self.state.get_state(guid)
+        needs_transcription = transcript_path is None
+        needs_archiving = self.settings.archive_enabled and archived_path is None
+
+        if not needs_transcription and not needs_archiving:
+            return
+
         memo = self._memo_for_path(path)
-        LOGGER.debug("Enqueueing %s", self._display_name(memo))
+        LOGGER.debug("Enqueueing %s (Transcribe: %s, Archive: %s)", 
+                     self._display_name(memo), needs_transcription, needs_archiving)
         self._queue.put(path)
         self._inflight.add(guid)
 
@@ -223,29 +237,55 @@ class VoiceMemoService:
         memo = self._memo_for_path(path)
         display = self._display_name(memo)
 
-        if memo.guid in self._processed:
-            LOGGER.debug("Skipping already processed memo %s", display)
-            return
-
         if memo.is_trashed:
             LOGGER.info("Skipping trashed memo %s", display)
             return
 
-        filename = self._transcript_filename(memo)
-        LOGGER.info("Memo title: %s", display)
-        LOGGER.info("Transcript file: %s", filename)
+        transcript_path, archived_path = self.state.get_state(memo.guid)
 
-        text = self.transcriber.transcribe(path, label=display)
-        self._write_transcript(memo, text, filename)
-        self._processed.add(memo.guid)
-
-    def _write_transcript(self, memo: VoiceMemo, text: str, filename: str | None = None) -> None:
-        if filename is None:
+        # 1. Transcription
+        if transcript_path is None:
             filename = self._transcript_filename(memo)
-        output_path = self.settings.transcript_dir / filename
-        LOGGER.info("Writing transcript for %s to %s", self._display_name(memo), output_path.name)
-        output_path.write_text(text + "\n", encoding="utf-8")
-        self.state.mark_processed(memo.guid, output_path)
+            LOGGER.info("Memo title: %s", display)
+            LOGGER.info("Transcript file: %s", filename)
+
+            text = self.transcriber.transcribe(path, label=display)
+            
+            output_path = self.settings.transcript_dir / filename
+            LOGGER.info("Writing transcript for %s to %s", display, output_path.name)
+            output_path.write_text(text + "\n", encoding="utf-8")
+            transcript_path = output_path
+
+        # 2. Archiving
+        if self.settings.archive_enabled and archived_path is None:
+            filename = self._transcript_filename(memo)
+            archived_path = self._archive_memo(memo, filename)
+
+        # Update State (only if we have at least a transcript, which we should)
+        if transcript_path:
+            self.state.mark_processed(memo.guid, transcript_path, archived_path)
+
+    def _archive_memo(self, memo: VoiceMemo, transcript_filename: str) -> Optional[Path]:
+        if not self.settings.archive_dir:
+            return None
+
+        # Derive archive filename from transcript filename but with .m4a extension
+        archive_name = Path(transcript_filename).with_suffix(".m4a").name
+        archive_path_base = self.settings.archive_dir / archive_name
+        
+        final_archive_path = archive_path_base
+        counter = 1
+        while final_archive_path.exists():
+            final_archive_path = archive_path_base.with_stem(f"{archive_path_base.stem}_{counter}")
+            counter += 1
+
+        try:
+            shutil.copy2(memo.path, final_archive_path)
+            LOGGER.info("Archived %s to %s", self._display_name(memo), final_archive_path.name)
+            return final_archive_path
+        except OSError as err:
+            LOGGER.error("Failed to archive %s: %s", self._display_name(memo), err)
+            return None
 
     def join(self) -> None:
         self._queue.join()

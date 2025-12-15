@@ -5,7 +5,7 @@ import logging
 import time
 from dataclasses import replace
 
-from .config import Settings, load_settings
+from .config import Settings, load_settings, DEFAULT_ARCHIVE_PATH
 from .metadata import list_voice_memos, resolve_created_at
 from .service import VoiceMemoService
 from .state import StateStore
@@ -30,6 +30,14 @@ def build_settings(args: argparse.Namespace) -> Settings:
         overrides["language"] = args.language
     if args.newest_first is not None:
         overrides["processing_order"] = "newest-first" if args.newest_first else "oldest-first"
+    
+    # Archiving configuration
+    if args.archive_dir:
+        overrides["archive_dir"] = Path(args.archive_dir).expanduser()
+        overrides["archive_enabled"] = True
+    elif args.archive:
+        overrides["archive_enabled"] = True
+
     if overrides:
         settings = replace(settings, **overrides)
     return settings
@@ -45,11 +53,12 @@ def _format_duration(seconds: float | None) -> str:
 
 
 def _list_recordings(settings: Settings) -> int:
-    processed: set[str] = set()
     store: StateStore | None = None
+    state_map: dict[str, tuple[Optional[Path], Optional[Path]]] = {}
     try:
         store = StateStore(settings.state_db)
-        processed = store.known_guids()
+        for guid in store.known_guids():
+            state_map[guid] = store.get_state(guid)
     except Exception as err:
         LOGGER.warning("Unable to read state database: %s", err)
     finally:
@@ -66,14 +75,20 @@ def _list_recordings(settings: Settings) -> int:
         logging.info("No recordings found in %s", settings.recordings_dir)
         return 0
 
-    print(f"{'✓':1}  {'When':19}  {'Duration':8}  Title")
+    print("/-- Transcribed")
+    print("|/- Archived")
+    print(f"{'T':<1}{'A':<1}  {'When':19}  {'Duration':8}  Title")
     for memo in memos:
         created = resolve_created_at(memo)
         when = created.strftime("%Y-%m-%d %H:%M:%S") if created else "unknown"
         title = (memo.title or "").strip() or memo.guid
         duration = _format_duration(memo.duration_seconds)
-        status = "✓" if memo.guid in processed else "."
-        print(f"{status:1}  {when:19}  {duration:<8}  {title}")
+
+        transcript_path, archived_path = state_map.get(memo.guid, (None, None))
+        transcribed_status = "✓" if transcript_path else "."
+        archived_status = "✓" if archived_path else "."
+
+        print(f"{transcribed_status:<1}{archived_status:<1}  {when:19}  {duration:<8}  {title}")
 
     return 0
 
@@ -86,6 +101,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--language", help="Language hint for Whisper (e.g. 'en', 'zh').")
     parser.add_argument("--list", action="store_true", help="List available recordings and exit.")
+    parser.add_argument("--archive", action="store_true", help="Enable archiving of processed recordings.")
+    parser.add_argument(
+        "--archive-dir", 
+        help=f"Directory to archive audio files (implies --archive). Defaults to '{DEFAULT_ARCHIVE_PATH}' or VOICE_MEMO_ARCHIVE_DIR env var."
+    )
     parser.add_argument(
         "--log-level",
         default="INFO",
