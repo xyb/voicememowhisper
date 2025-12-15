@@ -4,8 +4,9 @@ import argparse
 import logging
 import time
 from dataclasses import replace
+from pathlib import Path
 
-from .config import Settings, load_settings, DEFAULT_ARCHIVE_PATH, DEFAULT_TRANSCRIPT_PATH
+from .config import Settings, load_settings, DEFAULT_ARCHIVE_PATH, DEFAULT_TRANSCRIPT_PATH, DEFAULT_STATE_DB_PATH
 from .metadata import list_voice_memos, resolve_created_at
 from .service import VoiceMemoService
 from .state import StateStore

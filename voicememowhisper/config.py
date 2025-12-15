@@ -27,6 +27,7 @@ def _env_args(key: str) -> Tuple[str, ...]:
 DEFAULT_BASE_PATH = Path.home() / "Documents" / "VoiceMemoWhisper"
 DEFAULT_ARCHIVE_PATH = DEFAULT_BASE_PATH / "Audio"
 DEFAULT_TRANSCRIPT_PATH = DEFAULT_BASE_PATH / "Transcripts"
+DEFAULT_STATE_DB_PATH = Path.home() / ".local" / "state" / "voicememowhisper" / "state.sqlite"
 
 def _optional_env_path(key: str, default: Path | None) -> Path | None:
     raw = os.environ.get(key)
@@ -129,7 +130,7 @@ class Settings:
     )
     archive_dir: Optional[Path] = _optional_env_path("VOICE_MEMO_ARCHIVE_DIR", DEFAULT_ARCHIVE_PATH)
     archive_enabled: bool = False
-    state_db: Path = _env_path("VOICE_MEMO_STATE_DB", Path.home() / ".voice-memo-whisper" / "state.sqlite")
+    state_db: Path = _env_path("VOICE_MEMO_STATE_DB", DEFAULT_STATE_DB_PATH)
     whisperkit_cli: str = os.environ.get("VOICE_MEMO_WHISPERKIT_CLI", "whisperkit-cli")
     whisperkit_model: str = os.environ.get("VOICE_MEMO_WHISPERKIT_MODEL", "large-v3-v20240930_turbo")
     whisperkit_extra_args: Tuple[str, ...] = _env_args("VOICE_MEMO_WHISPERKIT_ARGS")
