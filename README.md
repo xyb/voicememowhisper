@@ -2,11 +2,11 @@
 
 This project watches the local Apple Voice Memos library and feeds new recordings to WhisperKit for transcription. It is designed to run locally on macOS so recordings never leave the machine.
 
-## Voice Memo storage recap
+## Features
 
-- Recordings live under `~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings`.
-- Metadata (title, creation date, etc.) is stored in `~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db`; older macOS builds may instead expose only `Recents.sqlite`.
-- macOS Gatekeeper protects this container. Grant the terminal full disk access (System Settings → Privacy & Security → Full Disk Access) so the script can read it.
+- **Automatic Transcription**: Watches for new Voice Memos and transcribes them using WhisperKit.
+- **Audio Archiving**: Optionally copies the original `.m4a` files to a separate directory (`--archive`), allowing you to safely delete them from the Voice Memos app to free up storage space while keeping a backup.
+- **Listing**: The `--list` command lists all recordings with their transcription and archiving status.
 
 ## Setup
 
@@ -19,86 +19,82 @@ python -m pip install --upgrade pip
 python -m pip install -e .
 ```
 
-For a shared environment across contributors, you can also reuse `/Users/xyb/.virtualenvs/voicememowhisper`:
-
-```bash
-python -m venv /Users/xyb/.virtualenvs/voicememowhisper
-source /Users/xyb/.virtualenvs/voicememowhisper/bin/activate
-python -m pip install -e .
-```
-
-The Brew formula installs the WhisperKit CLI and downloads models on demand. The editable install adds this watcher CLI into your virtual environment. If no recording path is provided, the tool automatically targets the system Voice Memos library under `~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings` and reads metadata from `CloudRecordings.db` in the same container (Full Disk Access required).
+The Brew formula installs the WhisperKit CLI and downloads models on demand. The editable install adds this watcher CLI into your virtual environment.
 
 ## Usage
 
 ```bash
-# One-off backfill (scans existing recordings then exits)
+# One-off backfill (transcribes existing recordings then exits)
 voicememo-whisper
 
 # Continuous mode (keep running and watch for new recordings)
 voicememo-whisper --watch
 
-# Inspect available recordings
+# Archive audio files after transcription (copies original .m4a)
+voicememo-whisper --archive
+
+# Inspect processed recordings
 voicememo-whisper --list
 ```
 
-The CLI accepts `--model` to pick a specific WhisperKit model (default `large-v3-v20240930_turbo`) and `--language` to hint the spoken language (`en`, `zh`, etc.). The first transcription run downloads the model to WhisperKit’s cache.
+### Options
 
-Transcripts are written to `~/Documents/VoiceMemoTranscripts/<timestamp>-<title>.txt`. A state database at `~/.voice-memo-whisper/state.sqlite` keeps track of processed recordings so reruns do not duplicate work.
+- `--model`: Pick a specific WhisperKit model (default `large-v3-v20240930_turbo`).
+- `--language`: Hint the spoken language (`en`, `zh`, etc.).
+- `--archive`: Enable archiving of processed audio files.
+- `--archive-dir`: Specify directory for archived audio (defaults to `~/Documents/VoiceMemoWhisper/Audio`).
+- `--transcript-dir`: Specify directory for transcripts (defaults to `~/Documents/VoiceMemoWhisper/Transcripts`).
 
-The `--list` mode reads Voice Memos metadata from `CloudRecordings.db`, so the output matches the titles, timestamps, and durations shown in the macOS/iOS app.
+The `--list` command provides a unified view of your recordings:
+- Shows transcription (`T`) and archiving (`A`) status.
+- Indicates if the source file still exists in Voice Memos (`S`).
+- Aggregates all files into a unified list, displaying metadata (Title, Date) including from archived files even if the source is deleted from the App.
 
-## Metadata schema notes
+Example output:
 
-- Primary table `ZCLOUDRECORDING` lives at `~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db`.
-  - `ZUNIQUEID`: recording GUID, matches the `.m4a` file at `Recordings/<ZPATH>`.
-  - `ZDATE`: recording time (seconds since 2001-01-01 UTC); convert with SQL `datetime(ZDATE + 978307200, 'unixepoch', 'localtime')`.
-  - `ZDURATION` / `ZLOCALDURATION`: duration in seconds.
-  - `ZENCRYPTEDTITLE`: title shown in the app (newer systems store the plaintext title despite the name).
-  - `ZCUSTOMLABEL` / `ZCUSTOMLABELFORSORTING`: user-entered label; falls back to `ZENCRYPTEDTITLE` when empty.
-  - `ZPATH`: original filename (usually `timestamp.m4a`).
-  - `ZEVICTIONDATE`: non-null means the recording was moved to Recently Deleted (convertible to a deletion time).
-- Supporting tables such as `ZFOLDER` are rarely used; when `CloudRecordings` is absent, older systems fall back to the `ZVOICE` table in `Recents.sqlite`.
-
-Example query (Terminal needs Full Disk Access):
-
-```bash
-sqlite3 -separator ' | ' "file:$HOME/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db?mode=ro" "
-SELECT
-  Z_PK,
-  datetime(ZDATE + 978307200, 'unixepoch', 'localtime') AS RecordedAt,
-  printf('%.1f', ZDURATION) AS Duration_s,
-  ZENCRYPTEDTITLE AS DisplayTitle,
-  ZCUSTOMLABEL,
-  ZPATH,
-  ZUNIQUEID,
-  CASE WHEN ZEVICTIONDATE IS NULL THEN 0 ELSE 1 END AS IsDeleted,
-  CASE WHEN ZEVICTIONDATE IS NULL THEN '' ELSE datetime(ZEVICTIONDATE + 978307200, 'unixepoch', 'localtime') END AS DeletedAt
-FROM ZCLOUDRECORDING
-ORDER BY ZDATE DESC;
-"
 ```
+/-- Transcribed
+|/-- Archived
+||/-- Source Exists
+TAS  When                 Duration  Title
+✓✓✓  2025-12-15 16:46:04  70m11s    Sample Recording 1
+✓✓✓  2025-12-14 14:19:53  92m48s    Sample Recording 2
+✓✓x  2025-12-13 10:11:16  -         Sample Recording 3 (source deleted)
+```
+
+## Data Locations
+
+By default, the tool organizes outputs under `~/Documents/VoiceMemoWhisper/`:
+- **Transcripts**: `~/Documents/VoiceMemoWhisper/Transcripts/`
+- **Archived Audio**: `~/Documents/VoiceMemoWhisper/Audio/` (when `--archive` is enabled)
+
+A state database tracks processed files to avoid duplication. It is stored at `~/.local/state/voicememowhisper/state.sqlite`.
 
 ## Configuration
 
 Override paths or defaults via environment variables:
 
 - `VOICE_MEMO_RECORDINGS_DIR` – directory containing Voice Memo `.m4a` files.
-- `VOICE_MEMO_METADATA_DB` – path to `CloudRecordings.db` (or `Recents.sqlite` on older macOS builds).
-- `VOICE_MEMO_LEGACY_METADATA_DB` – optional override for the fallback (`Recents.sqlite`) if you need to point at a different legacy database.
+- `VOICE_MEMO_METADATA_DB` – path to `CloudRecordings.db`.
 - `VOICE_MEMO_TRANSCRIPT_DIR` – where transcripts are stored.
+- `VOICE_MEMO_ARCHIVE_DIR` – where audio files are archived.
 - `VOICE_MEMO_STATE_DB` – location of the state database.
-- `VOICE_MEMO_WHISPERKIT_CLI` – override the path to the `whisperkit-cli` executable.
-- `VOICE_MEMO_WHISPERKIT_MODEL` – default WhisperKit model identifier.
-- `VOICE_MEMO_WHISPERKIT_ARGS` – extra CLI arguments (e.g. `--without-timestamps`).
-- `VOICE_MEMO_LANGUAGE` – hint the spoken language for transcription.
+- `VOICE_MEMO_WHISPERKIT_CLI` – path to `whisperkit-cli`.
+- `VOICE_MEMO_WHISPERKIT_MODEL` – WhisperKit model identifier.
+- `VOICE_MEMO_LANGUAGE` – language hint.
 
 ## Development
 
-Run the CLI directly from source without installing:
+Run the CLI directly from source:
 
 ```bash
 python -m voicememowhisper --watch
 ```
 
-Press `Ctrl+C` to stop the watcher.
+## Voice Memo storage recap
+
+**Note:** macOS Gatekeeper protects the Voice Memos container. You must grant the terminal **Full Disk Access** (System Settings → Privacy & Security → Full Disk Access) so the script can read your recordings.
+
+- Recordings live under `~/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings`.
+- Metadata is stored in `CloudRecordings.db` (or `Recents.sqlite` on older macOS).
+- For detailed file paths, database schemas, and SQL examples, see [docs/technical_details.md](docs/technical_details.md).
