@@ -25,6 +25,7 @@ def _env_args(key: str) -> Tuple[str, ...]:
 
 
 DEFAULT_ARCHIVE_PATH = Path.home() / "Documents" / "VoiceMemoArchives"
+DEFAULT_TRANSCRIPT_PATH = Path.home() / "Documents" / "VoiceMemoTranscripts"
 
 def _optional_env_path(key: str, default: Path | None) -> Path | None:
     raw = os.environ.get(key)
@@ -123,7 +124,7 @@ class Settings:
     metadata_db: Path = _env_path("VOICE_MEMO_METADATA_DB", _default_metadata_db())
     legacy_metadata_db: Optional[Path] = _optional_env_path("VOICE_MEMO_LEGACY_METADATA_DB", _default_legacy_metadata_db())
     transcript_dir: Path = _env_path(
-        "VOICE_MEMO_TRANSCRIPT_DIR", Path.home() / "Documents" / "VoiceMemoTranscripts"
+        "VOICE_MEMO_TRANSCRIPT_DIR", DEFAULT_TRANSCRIPT_PATH
     )
     archive_dir: Optional[Path] = _optional_env_path("VOICE_MEMO_ARCHIVE_DIR", DEFAULT_ARCHIVE_PATH)
     archive_enabled: bool = False

@@ -5,7 +5,7 @@ import logging
 import time
 from dataclasses import replace
 
-from .config import Settings, load_settings, DEFAULT_ARCHIVE_PATH
+from .config import Settings, load_settings, DEFAULT_ARCHIVE_PATH, DEFAULT_TRANSCRIPT_PATH
 from .metadata import list_voice_memos, resolve_created_at
 from .service import VoiceMemoService
 from .state import StateStore
@@ -31,6 +31,9 @@ def build_settings(args: argparse.Namespace) -> Settings:
     if args.newest_first is not None:
         overrides["processing_order"] = "newest-first" if args.newest_first else "oldest-first"
     
+    if args.transcript_dir:
+        overrides["transcript_dir"] = Path(args.transcript_dir).expanduser()
+
     # Archiving configuration
     if args.archive_dir:
         overrides["archive_dir"] = Path(args.archive_dir).expanduser()
@@ -105,6 +108,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--archive-dir", 
         help=f"Directory to archive audio files (implies --archive). Defaults to '{DEFAULT_ARCHIVE_PATH}' or VOICE_MEMO_ARCHIVE_DIR env var."
+    )
+    parser.add_argument(
+        "--transcript-dir",
+        help=f"Directory to save transcripts. Defaults to '{DEFAULT_TRANSCRIPT_PATH}' or VOICE_MEMO_TRANSCRIPT_DIR env var."
     )
     parser.add_argument(
         "--log-level",
