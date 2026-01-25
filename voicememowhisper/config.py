@@ -27,6 +27,7 @@ def _env_args(key: str) -> Tuple[str, ...]:
 DEFAULT_BASE_PATH = Path.home() / "Documents" / "VoiceMemoWhisper"
 DEFAULT_ARCHIVE_PATH = DEFAULT_BASE_PATH / "Audio"
 DEFAULT_TRANSCRIPT_PATH = DEFAULT_BASE_PATH / "Transcripts"
+DEFAULT_INBOX_PATH = DEFAULT_BASE_PATH / "Inbox"
 DEFAULT_STATE_DB_PATH = Path.home() / ".local" / "state" / "voicememowhisper" / "state.sqlite"
 
 def _optional_env_path(key: str, default: Path | None) -> Path | None:
@@ -117,6 +118,11 @@ def _default_legacy_metadata_db() -> Optional[Path]:
     return DEFAULT_LEGACY_METADATA
 
 
+def _default_inbox_dir() -> Optional[Path]:
+    """Return the default inbox directory path."""
+    return _optional_env_path("VOICE_MEMO_INBOX_DIR", DEFAULT_INBOX_PATH)
+
+
 @dataclass(frozen=True)
 class Settings:
     """Runtime configuration for the transcription service."""
@@ -130,6 +136,7 @@ class Settings:
     )
     archive_dir: Optional[Path] = _optional_env_path("VOICE_MEMO_ARCHIVE_DIR", DEFAULT_ARCHIVE_PATH)
     archive_enabled: bool = False
+    inbox_dir: Optional[Path] = _default_inbox_dir()
     state_db: Path = _env_path("VOICE_MEMO_STATE_DB", DEFAULT_STATE_DB_PATH)
     whisperkit_cli: str = os.environ.get("VOICE_MEMO_WHISPERKIT_CLI", "whisperkit-cli")
     whisperkit_model: str = os.environ.get("VOICE_MEMO_WHISPERKIT_MODEL", "large-v3-v20240930_turbo")

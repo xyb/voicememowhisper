@@ -10,6 +10,12 @@ def ensure_directories(settings: Settings | None = None) -> Settings:
     settings = settings or load_settings()
 
     settings.transcript_dir.mkdir(parents=True, exist_ok=True)
+    if settings.inbox_dir:
+        settings.inbox_dir.mkdir(parents=True, exist_ok=True)
+        if settings.archive_dir:
+            settings.archive_dir.mkdir(parents=True, exist_ok=True)
+    elif settings.archive_enabled and settings.archive_dir:
+        settings.archive_dir.mkdir(parents=True, exist_ok=True)
     settings.state_db.parent.mkdir(parents=True, exist_ok=True)
 
     return settings
