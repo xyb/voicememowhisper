@@ -20,6 +20,38 @@ def normalize_title(value: str | None) -> str:
     return re.sub(r"[^\w]+", "", value).lower()
 
 
+_TIMESTAMPED_STEM_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})_(.*)$")
+_APPLE_DEFAULT_STEM_RE = re.compile(r"^\d{8}\s\d{6}$")
+
+
+def parse_timestamped_stem(stem: str) -> tuple[str | None, str | None]:
+    """
+    Parse stems like: YYYY-MM-DD_HH-MM-SS_Title...
+    Returns (timestamp_str, title_part) or (None, None) if not matched.
+    """
+    match = _TIMESTAMPED_STEM_RE.match(stem)
+    if not match:
+        return None, None
+    return match.group(1), match.group(2)
+
+
+def title_from_stem(stem: str, fallback_title: str | None = None) -> str:
+    """
+    Derive a human-ish title from the filename stem.
+
+    Rules:
+    - If stem is already timestamped (YYYY-MM-DD_HH-MM-SS_...), use the title part after the timestamp.
+    - If stem looks like Apple's default (YYYYMMDD HHMMSS), prefer fallback_title when provided.
+    - Otherwise, use the stem as-is.
+    """
+    _ts, title_part = parse_timestamped_stem(stem)
+    if title_part:
+        return title_part
+    if _APPLE_DEFAULT_STEM_RE.match(stem):
+        return fallback_title or stem
+    return stem
+
+
 def to_naive(dt: datetime | None) -> datetime | None:
     if dt is None:
         return None

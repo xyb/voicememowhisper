@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 from voicememowhisper.config import Settings
 from voicememowhisper.metadata import VoiceMemo
+from voicememowhisper.naming import sanitize_filename
 from voicememowhisper.paths import ensure_directories
 import voicememowhisper.service as svc
 
@@ -146,13 +147,14 @@ class ServiceCoreTests(unittest.TestCase):
         memo = self.service._memo_for_path(audio)
         self.service._process_memo(memo)
 
-        # Transcript name matches audio stem only
-        transcripts = list(self.transcripts.glob("foo.txt"))
+        ts_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d_%H-%M-%S")
+
+        # Transcript name matches timestamp + stem
+        transcripts = list(self.transcripts.glob(f"{ts_str}_foo.txt"))
         self.assertEqual(len(transcripts), 1)
-        self.assertIn("TRANSCRIPT:foo.m4a", transcripts[0].read_text())
+        self.assertIn(f"TRANSCRIPT:{ts_str}_foo.m4a", transcripts[0].read_text())
 
         # Archive keeps timestamped naming
-        ts_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d_%H-%M-%S")
         archives = list(self.archive.glob(f"{ts_str}_foo*.m4a"))
         self.assertEqual(len(archives), 1)
 
@@ -161,12 +163,23 @@ class ServiceCoreTests(unittest.TestCase):
         self.assertIsNotNone(transcript_path)
         self.assertIsNotNone(archived_path)
 
-    def test_transcript_filename_uses_audio_stem(self) -> None:
-        audio = self.recordings / "bar.m4a"
+    def test_transcript_filename_uses_stem_title_part_when_timestamped(self) -> None:
+        audio = self.recordings / "2026-01-26_15-30-03_2026-01-26 Interview_Test_DataEngineer.m4a"
         audio.write_text("audio")
-        memo = VoiceMemo(guid="bar", path=audio)
-        name = self.service._transcript_filename(memo)
-        self.assertEqual(name, "bar.txt")
+
+        created_at = datetime(2026, 1, 26, 15, 30, 3)
+        memo = VoiceMemo(
+            guid=audio.stem,
+            path=audio,
+            title="IGNORED_METADATA_TITLE",
+            created_at=created_at,
+        )
+        name = self.service._transcript_filename(audio)
+        expected = (
+            f"{created_at.strftime('%Y-%m-%d_%H-%M-%S')}_"
+            f"{sanitize_filename('2026-01-26 Interview_Test_DataEngineer')}.txt"
+        )
+        self.assertEqual(name, expected)
 
     def test_enqueue_path_skips_when_transcript_already_present(self) -> None:
         audio = self.recordings / "bar.m4a"
