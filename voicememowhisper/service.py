@@ -35,6 +35,17 @@ def _sanitize_filename(value: str) -> str:
     return "".join(safe_chars).strip() or "untitled"
 
 
+def _archive_filename(memo: VoiceMemo) -> str:
+    """Generate archive filename with timestamp and sanitized title."""
+    timestamp = resolve_created_at(memo)
+    if timestamp is None:
+        timestamp_str = "undated"
+    else:
+        timestamp_str = timestamp.strftime("%Y-%m-%d_%H-%M-%S")
+    title = memo.title or memo.guid
+    return f"{timestamp_str}_{_sanitize_filename(title)}.m4a"
+
+
 def _hash_file(path: Path, chunk_size: int = 1024 * 1024) -> Optional[str]:
     """Return hex digest of file content or None on error."""
     sha = hashlib.sha256()
@@ -293,13 +304,8 @@ class VoiceMemoService:
         return memo
 
     def _transcript_filename(self, memo: VoiceMemo) -> str:
-        timestamp = resolve_created_at(memo)
-        if timestamp is None:
-            timestamp_str = "undated"
-        else:
-            timestamp_str = timestamp.strftime("%Y-%m-%d_%H-%M-%S")
-        title = memo.title or memo.guid
-        return f"{timestamp_str}_{_sanitize_filename(title)}.txt"
+        # Keep transcript name identical to audio stem (only change extension).
+        return f"{_sanitize_filename(memo.path.stem)}.txt"
 
     def _process_memo(self, memo: VoiceMemo) -> None:
         path = memo.path
@@ -356,8 +362,8 @@ class VoiceMemoService:
 
         # 2. Archiving
         if self.settings.archive_enabled and archived_path is None:
-            filename = self._transcript_filename(memo)
-            archived_path = self._archive_memo(memo, filename)
+            archive_name = _archive_filename(memo)
+            archived_path = self._archive_memo(memo, archive_name)
 
         # Update State (only if we have at least a transcript, which we should)
         if transcript_path:
@@ -373,13 +379,11 @@ class VoiceMemoService:
                 created_at=created_at_str
             )
 
-    def _archive_memo(self, memo: VoiceMemo, transcript_filename: str) -> Optional[Path]:
+    def _archive_memo(self, memo: VoiceMemo, archive_filename: str) -> Optional[Path]:
         if not self.settings.archive_dir:
             return None
 
-        # Derive archive filename from transcript filename but with .m4a extension
-        archive_name = Path(transcript_filename).with_suffix(".m4a").name
-        archive_path_base = self.settings.archive_dir / archive_name
+        archive_path_base = self.settings.archive_dir / archive_filename
         
         final_archive_path = archive_path_base
         counter = 1

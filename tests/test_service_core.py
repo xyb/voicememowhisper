@@ -145,13 +145,13 @@ class ServiceCoreTests(unittest.TestCase):
         memo = self.service._memo_for_path(audio)
         self.service._process_memo(memo)
 
-        # Transcript created with timestamp-based name
-        ts_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d_%H-%M-%S")
-        transcripts = list(self.transcripts.glob(f"{ts_str}_foo*.txt"))
+        # Transcript name matches audio stem only
+        transcripts = list(self.transcripts.glob("foo.txt"))
         self.assertEqual(len(transcripts), 1)
         self.assertIn("TRANSCRIPT:foo.m4a", transcripts[0].read_text())
 
-        # Archive created
+        # Archive keeps timestamped naming
+        ts_str = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d_%H-%M-%S")
         archives = list(self.archive.glob(f"{ts_str}_foo*.m4a"))
         self.assertEqual(len(archives), 1)
 
