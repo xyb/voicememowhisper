@@ -152,7 +152,7 @@ class ServiceCoreTests(unittest.TestCase):
         # Transcript name matches timestamp + stem
         transcripts = list(self.transcripts.glob(f"{ts_str}_foo.txt"))
         self.assertEqual(len(transcripts), 1)
-        self.assertIn(f"TRANSCRIPT:{ts_str}_foo.m4a", transcripts[0].read_text())
+        self.assertIn("TRANSCRIPT:foo.m4a", transcripts[0].read_text())
 
         # Archive keeps timestamped naming
         archives = list(self.archive.glob(f"{ts_str}_foo*.m4a"))
@@ -164,20 +164,19 @@ class ServiceCoreTests(unittest.TestCase):
         self.assertIsNotNone(archived_path)
 
     def test_transcript_filename_uses_stem_title_part_when_timestamped(self) -> None:
-        audio = self.recordings / "2026-01-26_15-30-03_2026-01-26 Interview_Test_DataEngineer.m4a"
+        audio = self.recordings / "2026-01-26_15-30-03_2026-01-26 Interview_Test.m4a"
         audio.write_text("audio")
 
         created_at = datetime(2026, 1, 26, 15, 30, 3)
         memo = VoiceMemo(
             guid=audio.stem,
             path=audio,
-            title="IGNORED_METADATA_TITLE",
             created_at=created_at,
         )
-        name = self.service._transcript_filename(audio)
+        name = self.service._transcript_filename(memo)
         expected = (
             f"{created_at.strftime('%Y-%m-%d_%H-%M-%S')}_"
-            f"{sanitize_filename('2026-01-26 Interview_Test_DataEngineer')}.txt"
+            f"{sanitize_filename('2026-01-26 Interview_Test')}.txt"
         )
         self.assertEqual(name, expected)
 

@@ -293,9 +293,16 @@ class VoiceMemoService:
         self._metadata[guid] = memo
         return memo
 
-    def _transcript_filename(self, audio_path: Path) -> str:
-        """Name transcript to match the audio filename stem."""
-        return f"{sanitize_filename(audio_path.stem)}.txt"
+    def _transcript_filename(self, memo: VoiceMemo) -> str:
+        """
+        Build transcript filename as: <timestamp>_<title>.txt
+
+        Title is derived from metadata when available; otherwise derived from filename stem.
+        """
+        ts = resolve_created_at(memo)
+        ts_str = ts.strftime("%Y-%m-%d_%H-%M-%S") if ts else "undated"
+        title = memo.title or title_from_stem(memo.path.stem)
+        return f"{ts_str}_{sanitize_filename(title)}.txt"
 
     def _process_memo(self, memo: VoiceMemo) -> None:
         path = memo.path
@@ -337,31 +344,23 @@ class VoiceMemoService:
             except Exception:
                 pass
 
-        # If archiving is enabled, establish the canonical archive filename first so
-        # transcript naming always matches the final audio filename.
-        if self.settings.archive_enabled and archived_path is None and self.settings.archive_dir:
-            try:
-                if not path.resolve().is_relative_to(self.settings.archive_dir.resolve()):
-                    archive_name = _archive_filename(memo)
-                    archived_path = self._archive_memo(memo, archive_name)
-            except Exception:
-                # If resolve/is_relative_to fails, proceed with best-effort below.
-                archive_name = _archive_filename(memo)
-                archived_path = self._archive_memo(memo, archive_name)
-
         # 1. Transcription
         if transcript_path is None:
-            transcript_source = archived_path or path
-            filename = self._transcript_filename(transcript_source)
+            filename = self._transcript_filename(memo)
             LOGGER.info("Memo title: %s", display)
             LOGGER.info("Transcript file: %s", filename)
 
-            text = self.transcriber.transcribe(transcript_source, label=display)
-
+            text = self.transcriber.transcribe(path, label=display)
+            
             output_path = self.settings.transcript_dir / filename
             LOGGER.info("Writing transcript for %s to %s", display, output_path.name)
             output_path.write_text(text + "\n", encoding="utf-8")
             transcript_path = output_path
+
+        # 2. Archiving
+        if self.settings.archive_enabled and archived_path is None:
+            archive_name = _archive_filename(memo)
+            archived_path = self._archive_memo(memo, archive_name)
 
         # Update State (only if we have at least a transcript, which we should)
         if transcript_path:
