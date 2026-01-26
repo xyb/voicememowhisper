@@ -161,22 +161,12 @@ class ServiceCoreTests(unittest.TestCase):
         self.assertIsNotNone(transcript_path)
         self.assertIsNotNone(archived_path)
 
-    def test_transcript_filename_prefers_title_with_timestamp(self) -> None:
+    def test_transcript_filename_uses_audio_stem(self) -> None:
         audio = self.recordings / "bar.m4a"
         audio.write_text("audio")
-        mtime = 1_700_000_000
-        os.utime(audio, (mtime, mtime))
-
-        memo = VoiceMemo(
-            guid="bar",
-            path=audio,
-            title="My Great Meeting",
-            created_at=datetime.fromtimestamp(mtime),
-        )
+        memo = VoiceMemo(guid="bar", path=audio, title="My Great Meeting")
         name = self.service._transcript_filename(memo)
-        ts_str = memo.created_at.strftime("%Y-%m-%d_%H-%M-%S")
-        self.assertTrue(name.startswith(f"{ts_str}_"))
-        self.assertTrue(name.endswith("My Great Meeting.txt"))
+        self.assertEqual(name, "bar.txt")
 
     def test_enqueue_path_skips_when_transcript_already_present(self) -> None:
         audio = self.recordings / "bar.m4a"
