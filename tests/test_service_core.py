@@ -164,7 +164,7 @@ class ServiceCoreTests(unittest.TestCase):
     def test_transcript_filename_uses_audio_stem(self) -> None:
         audio = self.recordings / "bar.m4a"
         audio.write_text("audio")
-        memo = VoiceMemo(guid="bar", path=audio, title="My Great Meeting")
+        memo = VoiceMemo(guid="bar", path=audio)
         name = self.service._transcript_filename(memo)
         self.assertEqual(name, "bar.txt")
 
