@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from voicememowhisper.config import Settings
+from voicememowhisper.metadata import VoiceMemo
 from voicememowhisper.paths import ensure_directories
 import voicememowhisper.service as svc
 
@@ -159,6 +160,23 @@ class ServiceCoreTests(unittest.TestCase):
         transcript_path, archived_path = self.service.state.get_state("foo")
         self.assertIsNotNone(transcript_path)
         self.assertIsNotNone(archived_path)
+
+    def test_transcript_filename_prefers_title_with_timestamp(self) -> None:
+        audio = self.recordings / "bar.m4a"
+        audio.write_text("audio")
+        mtime = 1_700_000_000
+        os.utime(audio, (mtime, mtime))
+
+        memo = VoiceMemo(
+            guid="bar",
+            path=audio,
+            title="My Great Meeting",
+            created_at=datetime.fromtimestamp(mtime),
+        )
+        name = self.service._transcript_filename(memo)
+        ts_str = memo.created_at.strftime("%Y-%m-%d_%H-%M-%S")
+        self.assertTrue(name.startswith(f"{ts_str}_"))
+        self.assertTrue(name.endswith("My Great Meeting.txt"))
 
     def test_enqueue_path_skips_when_transcript_already_present(self) -> None:
         audio = self.recordings / "bar.m4a"

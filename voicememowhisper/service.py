@@ -294,8 +294,18 @@ class VoiceMemoService:
         return memo
 
     def _transcript_filename(self, memo: VoiceMemo) -> str:
-        # Keep transcript name identical to audio stem (only change extension).
-        return f"{sanitize_filename(memo.path.stem)}.txt"
+        """
+        Build transcript filename.
+        - If title exists, mirror archive naming (timestamp + title).
+        - Otherwise fall back to audio stem.
+        """
+        if memo.title:
+            ts = resolve_created_at(memo)
+            ts_str = ts.strftime("%Y-%m-%d_%H-%M-%S") if ts else "undated"
+            base = f"{ts_str}_{sanitize_filename(memo.title)}"
+        else:
+            base = sanitize_filename(memo.path.stem)
+        return f"{base}.txt"
 
     def _process_memo(self, memo: VoiceMemo) -> None:
         path = memo.path
