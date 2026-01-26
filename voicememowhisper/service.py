@@ -21,19 +21,9 @@ from .paths import ensure_directories
 from .state import StateStore
 from .transcribe import WhisperTranscriber
 from .watcher import start_watcher
+from .naming import sanitize_filename
 
 LOGGER = logging.getLogger("service")
-
-
-def _sanitize_filename(value: str) -> str:
-    safe_chars = []
-    for ch in value:
-        if ch.isalnum() or ch in ("-", "_", " "):
-            safe_chars.append(ch)
-        else:
-            safe_chars.append("_")
-    return "".join(safe_chars).strip() or "untitled"
-
 
 def _archive_filename(memo: VoiceMemo) -> str:
     """Generate archive filename with timestamp and sanitized title."""
@@ -43,7 +33,7 @@ def _archive_filename(memo: VoiceMemo) -> str:
     else:
         timestamp_str = timestamp.strftime("%Y-%m-%d_%H-%M-%S")
     title = memo.title or memo.guid
-    return f"{timestamp_str}_{_sanitize_filename(title)}.m4a"
+    return f"{timestamp_str}_{sanitize_filename(title)}.m4a"
 
 
 def _hash_file(path: Path, chunk_size: int = 1024 * 1024) -> Optional[str]:
@@ -305,7 +295,7 @@ class VoiceMemoService:
 
     def _transcript_filename(self, memo: VoiceMemo) -> str:
         # Keep transcript name identical to audio stem (only change extension).
-        return f"{_sanitize_filename(memo.path.stem)}.txt"
+        return f"{sanitize_filename(memo.path.stem)}.txt"
 
     def _process_memo(self, memo: VoiceMemo) -> None:
         path = memo.path
@@ -428,7 +418,7 @@ class VoiceMemoService:
         timestamp_str = timestamp.strftime("%Y-%m-%d_%H-%M-%S") if timestamp else "undated"
 
         # Use filename stem as title
-        title = _sanitize_filename(path.stem)
+        title = sanitize_filename(path.stem)
         archive_name = f"{timestamp_str}_{title}.m4a"
         archive_path_base = self.settings.archive_dir / archive_name
 

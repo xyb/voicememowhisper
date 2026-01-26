@@ -13,6 +13,7 @@ from .config import Settings, load_settings, DEFAULT_ARCHIVE_PATH, DEFAULT_TRANS
 from .metadata import list_voice_memos, resolve_created_at
 from .service import VoiceMemoService
 from .state import StateStore
+from .naming import dedup_key, normalize_title, to_naive as naming_to_naive
 
 LOGGER = logging.getLogger("cli")
 
@@ -215,7 +216,7 @@ def _list_recordings(settings: Settings) -> int:
 
     # --- Phase 5: Deduplicate by (timestamp to second, normalized title) ---
     def _norm_title(title: str) -> str:
-        return re.sub(r"[^\\w]+", "", title).lower()
+        return normalize_title(title)
 
     deduped: dict[tuple[str, str], dict] = {}
     leftovers: list[dict] = []
@@ -223,8 +224,10 @@ def _list_recordings(settings: Settings) -> int:
         if not item['created_at'] or not item['title']:
             leftovers.append(item)
             continue
-        when_key = item['created_at'].strftime("%Y-%m-%d %H:%M:%S")
-        title_key = _norm_title(item['title'] or item['key'])
+        when_key, title_key = dedup_key(item['created_at'], item['title'] or item['key'])
+        if not when_key and not title_key:
+            leftovers.append(item)
+            continue
         key = (when_key, title_key)
         if key not in deduped:
             deduped[key] = item
@@ -240,7 +243,10 @@ def _list_recordings(settings: Settings) -> int:
                 existing['title'] = item['title']
             # Keep earliest created_at (should be same to second)
             if item['created_at'] and existing['created_at']:
-                existing['created_at'] = min(existing['created_at'], item['created_at'])
+                a = naming_to_naive(existing['created_at'])
+                b = naming_to_naive(item['created_at'])
+                if a and b:
+                    existing['created_at'] = a if a <= b else b
 
     display_list = list(deduped.values()) + leftovers
     display_list.sort(key=sort_key, reverse=True)
