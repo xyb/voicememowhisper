@@ -213,6 +213,36 @@ def _list_recordings(settings: Settings) -> int:
             return ""
         return str(to_naive(dt))
 
+    # --- Phase 5: Deduplicate by (timestamp to second, normalized title) ---
+    def _norm_title(title: str) -> str:
+        return re.sub(r"[^\\w]+", "", title).lower()
+
+    deduped: dict[tuple[str, str], dict] = {}
+    leftovers: list[dict] = []
+    for item in display_list:
+        if not item['created_at'] or not item['title']:
+            leftovers.append(item)
+            continue
+        when_key = item['created_at'].strftime("%Y-%m-%d %H:%M:%S")
+        title_key = _norm_title(item['title'] or item['key'])
+        key = (when_key, title_key)
+        if key not in deduped:
+            deduped[key] = item
+        else:
+            existing = deduped[key]
+            # Merge flags
+            for flag in ('t', 'a', 's'):
+                existing[flag] = existing[flag] or item[flag]
+            # Prefer title that has source info or longer descriptive text
+            if (existing['s'] is False and item['s'] is True) or (
+                len(item['title'] or "") > len(existing['title'] or "")
+            ):
+                existing['title'] = item['title']
+            # Keep earliest created_at (should be same to second)
+            if item['created_at'] and existing['created_at']:
+                existing['created_at'] = min(existing['created_at'], item['created_at'])
+
+    display_list = list(deduped.values()) + leftovers
     display_list.sort(key=sort_key, reverse=True)
     
     # Print header
