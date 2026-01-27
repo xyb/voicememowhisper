@@ -30,7 +30,7 @@ def test_configure_logging_adds_filter() -> None:
     )
 
 
-def test_build_settings_archive_flag_enables_archive(tmp_path, monkeypatch) -> None:
+def test_build_settings_no_archive_flag_disables_archive(tmp_path, monkeypatch) -> None:
     base = Settings(
         container_root=tmp_path,
         recordings_dir=tmp_path / "recordings",
@@ -57,11 +57,11 @@ def test_build_settings_archive_flag_enables_archive(tmp_path, monkeypatch) -> N
             newest_first=True,
             transcript_dir=None,
             archive_dir=None,
-            archive=True,
+            archive=False,
         ),
     )()
     s = cli.build_settings(args)
-    assert s.archive_enabled is True
+    assert s.archive_enabled is False
 
 
 def test_main_list_calls_list_recordings_with_limit(monkeypatch, tmp_path) -> None:
@@ -94,6 +94,38 @@ def test_main_list_calls_list_recordings_with_limit(monkeypatch, tmp_path) -> No
     monkeypatch.setattr(cli, "_list_recordings", _fake_list)
     assert cli.main(["--list", "-n", "5"]) == 0
     assert called["limit"] == 5
+
+
+def test_main_list_accepts_l_short_flag_for_list(monkeypatch, tmp_path) -> None:
+    settings = Settings(
+        container_root=tmp_path,
+        recordings_dir=tmp_path / "recordings",
+        metadata_db=tmp_path / "metadata.db",
+        legacy_metadata_db=None,
+        transcript_dir=tmp_path / "transcripts",
+        archive_dir=None,
+        archive_enabled=False,
+        inbox_dir=None,
+        state_db=tmp_path / "state.sqlite",
+        whisperkit_cli="whisperkit-cli",
+        whisperkit_model="dummy-model",
+        whisperkit_extra_args=(),
+        language=None,
+        processing_order="newest-first",
+    )
+
+    monkeypatch.setattr(cli, "_configure_logging", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli, "build_settings", lambda _args: settings)
+
+    called: dict[str, int] = {}
+
+    def _fake_list(_settings: Settings, *, limit: int = 10) -> int:
+        called["limit"] = limit
+        return 0
+
+    monkeypatch.setattr(cli, "_list_recordings", _fake_list)
+    assert cli.main(["-l", "-n", "7"]) == 0
+    assert called["limit"] == 7
 
 
 def test_main_returns_1_when_build_settings_fails(monkeypatch) -> None:

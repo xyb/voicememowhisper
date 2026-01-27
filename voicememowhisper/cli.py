@@ -63,11 +63,10 @@ def build_settings(args: argparse.Namespace) -> Settings:
     if args.transcript_dir:
         overrides["transcript_dir"] = Path(args.transcript_dir).expanduser()
 
-    # Archiving configuration
+    # Archiving configuration (default enabled; use --no-archive to disable)
+    overrides["archive_enabled"] = bool(getattr(args, "archive", True))
     if args.archive_dir:
         overrides["archive_dir"] = Path(args.archive_dir).expanduser()
-        overrides["archive_enabled"] = True
-    elif args.archive:
         overrides["archive_enabled"] = True
 
     if overrides:
@@ -178,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
         "--model", help="WhisperKit model identifier (default from env or 'large-v3-v20240930_turbo')."
     )
     parser.add_argument("--language", help="Language hint for Whisper (e.g. 'en', 'zh').")
-    parser.add_argument("--list", action="store_true", help="List available recordings and exit.")
+    parser.add_argument("-l", "--list", action="store_true", help="List available recordings and exit.")
     parser.add_argument(
         "-n",
         "--limit",
@@ -186,7 +185,12 @@ def main(argv: list[str] | None = None) -> int:
         default=10,
         help="For --list: number of items to show (default: 10; 0 for all).",
     )
-    parser.add_argument("--archive", action="store_true", help="Enable archiving of processed recordings.")
+    parser.add_argument(
+        "--archive",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable archiving of processed recordings (default: true). Use --no-archive to disable.",
+    )
     parser.add_argument(
         "--archive-dir", 
         help=f"Directory to archive audio files (implies --archive). Defaults to '{DEFAULT_ARCHIVE_PATH}' or VOICE_MEMO_ARCHIVE_DIR env var."

@@ -39,8 +39,8 @@ voicememo-whisper
 # Continuous mode (keep running and watch for new recordings)
 voicememo-whisper --watch
 
-# Archive audio files after transcription (copies original .m4a)
-voicememo-whisper --archive
+# Disable archiving (archiving is enabled by default)
+voicememo-whisper --no-archive
 
 # Inspect processed recordings
 voicememo-whisper --list
@@ -52,9 +52,9 @@ voicememo-whisper --list
 - `-vv`: Debug verbosity (shows extra details like skipped files).
 - `--model`: Pick a specific WhisperKit model (default `large-v3-v20240930_turbo`).
 - `--language`: Hint the spoken language (`en`, `zh`, etc.).
-- `--list`: List recordings and exit.
+- `-l/--list`: List recordings and exit.
 - `-n/--limit`: For `--list`, number of items to show (default: 10; `0` for all).
-- `--archive`: Enable archiving of processed audio files.
+- `--archive/--no-archive`: Enable/disable archiving of processed audio files (default: enabled).
 - `--archive-dir`: Specify directory for archived audio (defaults to `~/Documents/VoiceMemoWhisper/Audio`).
 - `--transcript-dir`: Specify directory for transcripts (defaults to `~/Documents/VoiceMemoWhisper/Transcripts`).
 
