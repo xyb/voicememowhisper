@@ -6,6 +6,7 @@ This project watches the local Apple Voice Memos library and feeds new recording
 
 - **Automatic Transcription**: Watches for new Voice Memos and transcribes them using WhisperKit.
 - **Audio Archiving**: Optionally copies the original `.m4a` files to a separate directory (`--archive`), allowing you to safely delete them from the Voice Memos app to free up storage space while keeping a backup.
+- **Inbox Import**: Optionally process external audio dropped into an Inbox directory (e.g. from iOS) and move it into the archive before transcribing.
 - **Listing**: The `--list` command lists all recordings with their transcription and archiving status.
 
 ## Setup
@@ -20,6 +21,14 @@ python -m pip install -e .
 ```
 
 The Brew formula installs the WhisperKit CLI and downloads models on demand. The editable install adds this watcher CLI into your virtual environment.
+
+### Optional dependency: watchdog
+
+Continuous watching mode (`--watch`) uses `watchdog`. If you only use one-off runs or `--list`, you do not need it.
+
+```bash
+python -m pip install watchdog
+```
 
 ## Usage
 
@@ -39,6 +48,8 @@ voicememo-whisper --list
 
 ### Options
 
+- `-v`: Increase verbosity (shows startup info like paths/models).
+- `-vv`: Debug verbosity (shows extra details like skipped files).
 - `--model`: Pick a specific WhisperKit model (default `large-v3-v20240930_turbo`).
 - `--language`: Hint the spoken language (`en`, `zh`, etc.).
 - `--archive`: Enable archiving of processed audio files.
@@ -67,6 +78,7 @@ TAS  When                 Duration  Title
 By default, the tool organizes outputs under `~/Documents/VoiceMemoWhisper/`:
 - **Transcripts**: `~/Documents/VoiceMemoWhisper/Transcripts/`
 - **Archived Audio**: `~/Documents/VoiceMemoWhisper/Audio/` (when `--archive` is enabled)
+- **Inbox**: `~/Documents/VoiceMemoWhisper/Inbox/` (when `VOICE_MEMO_INBOX_DIR` is set or using default)
 
 A state database tracks processed files to avoid duplication. It is stored at `~/.local/state/voicememowhisper/state.sqlite`.
 
@@ -76,6 +88,7 @@ Override paths or defaults via environment variables:
 
 - `VOICE_MEMO_RECORDINGS_DIR` – directory containing Voice Memo `.m4a` files.
 - `VOICE_MEMO_METADATA_DB` – path to `CloudRecordings.db`.
+- `VOICE_MEMO_INBOX_DIR` – optional Inbox directory for importing external audio.
 - `VOICE_MEMO_TRANSCRIPT_DIR` – where transcripts are stored.
 - `VOICE_MEMO_ARCHIVE_DIR` – where audio files are archived.
 - `VOICE_MEMO_STATE_DB` – location of the state database.
@@ -89,6 +102,13 @@ Run the CLI directly from source:
 
 ```bash
 python -m voicememowhisper --watch
+```
+
+Run tests:
+
+```bash
+make test
+make test-cov
 ```
 
 ## Voice Memo storage recap
