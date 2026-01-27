@@ -90,13 +90,20 @@ def _parse_filename(path: Path) -> tuple[str | None, str | None]:
     return _parse(path)
 
 
-def _list_recordings(settings: Settings) -> int:
+def _list_recordings(settings: Settings, *, limit: int = 10) -> int:
     try:
         items = collect_recordings(settings)
     except Exception:
         return 1
 
-    output = format_list_output(items)
+    visible_all = [i for i in items if (i.has_source or i.has_transcript or i.has_archive)]
+    total = len(visible_all)
+    visible = visible_all
+    if limit > 0:
+        visible = visible[:limit]
+
+    shown = len(visible)
+    output = format_list_output(visible, shown=shown, total=total)
     print(output, end="")
     return 0
 
@@ -116,6 +123,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--language", help="Language hint for Whisper (e.g. 'en', 'zh').")
     parser.add_argument("--list", action="store_true", help="List available recordings and exit.")
+    parser.add_argument(
+        "-n",
+        "--limit",
+        type=int,
+        default=10,
+        help="For --list: number of items to show (default: 10; 0 for all).",
+    )
     parser.add_argument("--archive", action="store_true", help="Enable archiving of processed recordings.")
     parser.add_argument(
         "--archive-dir", 
@@ -147,7 +161,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     if args.list:
-        return _list_recordings(settings)
+        return _list_recordings(settings, limit=args.limit)
 
     try:
         from .service import VoiceMemoService

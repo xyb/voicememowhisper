@@ -188,7 +188,12 @@ def collect_recordings(settings: Settings) -> list[RecordingItem]:
     return out
 
 
-def format_list_output(items: list[RecordingItem]) -> str:
+def format_list_output(
+    items: list[RecordingItem],
+    *,
+    shown: int | None = None,
+    total: int | None = None,
+) -> str:
     if not items:
         return "No recordings found.\n"
 
@@ -196,7 +201,10 @@ def format_list_output(items: list[RecordingItem]) -> str:
     lines.append("/-- Transcribed")
     lines.append("|/-- Archived")
     lines.append("||/-- Source Exists")
-    lines.append(f"{'T':<1}{'A':<1}{'S':<1}  {'When':19}  {'Duration':8}  Title")
+    title_header = "Title"
+    if shown is not None and total is not None:
+        title_header = f"Title ({shown}/{total})"
+    lines.append(f"{'T':<1}{'A':<1}{'S':<1}  {'When':19}  {'Duration':8}  {title_header}")
 
     for item in items:
         if not (item.has_source or item.has_transcript or item.has_archive):

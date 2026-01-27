@@ -52,6 +52,8 @@ voicememo-whisper --list
 - `-vv`: Debug verbosity (shows extra details like skipped files).
 - `--model`: Pick a specific WhisperKit model (default `large-v3-v20240930_turbo`).
 - `--language`: Hint the spoken language (`en`, `zh`, etc.).
+- `--list`: List recordings and exit.
+- `-n/--limit`: For `--list`, number of items to show (default: 10; `0` for all).
 - `--archive`: Enable archiving of processed audio files.
 - `--archive-dir`: Specify directory for archived audio (defaults to `~/Documents/VoiceMemoWhisper/Audio`).
 - `--transcript-dir`: Specify directory for transcripts (defaults to `~/Documents/VoiceMemoWhisper/Transcripts`).
@@ -60,6 +62,7 @@ The `--list` command provides a unified view of your recordings:
 - Shows transcription (`T`) and archiving (`A`) status.
 - Indicates if the source file still exists in Voice Memos (`S`).
 - Aggregates all files into a unified list, displaying metadata (Title, Date) including from archived files even if the source is deleted from the App.
+- By default, only the most recent 10 items are shown. The header shows `Title (shown/total)`.
 
 Example output:
 
@@ -67,7 +70,7 @@ Example output:
 /-- Transcribed
 |/-- Archived
 ||/-- Source Exists
-TAS  When                 Duration  Title
+TAS  When                 Duration  Title (3/3)
 ✓✓✓  2025-12-15 16:46:04  70m11s    Sample Recording 1
 ✓✓✓  2025-12-14 14:19:53  92m48s    Sample Recording 2
 ✓✓x  2025-12-13 10:11:16  -         Sample Recording 3 (source deleted)

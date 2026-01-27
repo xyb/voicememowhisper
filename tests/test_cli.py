@@ -132,10 +132,87 @@ def test_list_recordings_dedups_same_time_and_title(tmp_path, monkeypatch, capsy
 
     monkeypatch.setattr(listing, "StateStore", FakeStateStore)
     monkeypatch.setattr(listing, "list_voice_memos", lambda _settings: memos)
-    rc = _list_recordings(settings)
+    rc = _list_recordings(settings, limit=0)
 
     assert rc == 0
     out = capsys.readouterr().out
     assert out.count("meeting") == 1
     assert "TAS" in out.replace(" ", "")
+
+
+def test_list_recordings_limit_defaults_to_10(tmp_path, monkeypatch, capsys) -> None:
+    recordings = tmp_path / "recordings"
+    recordings.mkdir()
+    transcripts = tmp_path / "transcripts"
+    transcripts.mkdir()
+
+    settings = Settings(
+        container_root=tmp_path,
+        recordings_dir=recordings,
+        metadata_db=tmp_path / "metadata.db",
+        legacy_metadata_db=None,
+        transcript_dir=transcripts,
+        archive_dir=None,
+        archive_enabled=False,
+        inbox_dir=None,
+        state_db=tmp_path / "state.sqlite",
+        whisperkit_cli="whisperkit-cli",
+        whisperkit_model="dummy-model",
+        whisperkit_extra_args=(),
+        language=None,
+        processing_order="newest-first",
+    )
+
+    # Create 12 transcript files; ensure ordering is by timestamp in filename.
+    for i in range(12):
+        ts = f"2026-01-27_09-30-{i:02d}"
+        (transcripts / f"{ts}_example_meeting.txt").write_text("t")
+
+    monkeypatch.setattr(listing, "StateStore", FakeStateStore)
+    monkeypatch.setattr(listing, "list_voice_memos", lambda _settings: [])
+
+    rc = _list_recordings(settings)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Title (10/12)" in out
+    item_lines = [ln for ln in out.splitlines() if ln.startswith(("✓", ".")) and len(ln) >= 3]
+    assert len(item_lines) == 10
+
+
+def test_list_recordings_limit_can_be_overridden(tmp_path, monkeypatch, capsys) -> None:
+    recordings = tmp_path / "recordings"
+    recordings.mkdir()
+    transcripts = tmp_path / "transcripts"
+    transcripts.mkdir()
+
+    settings = Settings(
+        container_root=tmp_path,
+        recordings_dir=recordings,
+        metadata_db=tmp_path / "metadata.db",
+        legacy_metadata_db=None,
+        transcript_dir=transcripts,
+        archive_dir=None,
+        archive_enabled=False,
+        inbox_dir=None,
+        state_db=tmp_path / "state.sqlite",
+        whisperkit_cli="whisperkit-cli",
+        whisperkit_model="dummy-model",
+        whisperkit_extra_args=(),
+        language=None,
+        processing_order="newest-first",
+    )
+
+    for i in range(12):
+        ts = f"2026-01-27_09-30-{i:02d}"
+        (transcripts / f"{ts}_example_meeting.txt").write_text("t")
+
+    monkeypatch.setattr(listing, "StateStore", FakeStateStore)
+    monkeypatch.setattr(listing, "list_voice_memos", lambda _settings: [])
+
+    rc = _list_recordings(settings, limit=5)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Title (5/12)" in out
+    item_lines = [ln for ln in out.splitlines() if ln.startswith(("✓", ".")) and len(ln) >= 3]
+    assert len(item_lines) == 5
 
