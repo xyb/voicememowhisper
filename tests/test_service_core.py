@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import queue
 import shutil
 import sys
 import tempfile
@@ -68,6 +69,12 @@ class FakeState:
 
     def get_state(self, guid: str) -> tuple[Path | None, Path | None]:
         return self.data.get(guid, (None, None))
+
+    def has_archived_path(self, archived_path: Path) -> bool:
+        for _guid, (_transcript, archived) in self.data.items():
+            if archived == archived_path:
+                return True
+        return False
 
     def mark_processed(
         self,
@@ -207,6 +214,22 @@ class ServiceCoreTests(unittest.TestCase):
         queued = self.service._queue.get(timeout=1)
         self.assertEqual(queued, archived)
         self.assertIn("needs", self.service._inflight)
+
+    def test_scan_archive_does_not_reprocess_files_already_archived_in_state(self) -> None:
+        audio = self.recordings / "foo.m4a"
+        audio.write_text("audio")
+        mtime = 1_700_000_000  # deterministic timestamp
+        os.utime(audio, (mtime, mtime))
+
+        memo = self.service._memo_for_path(audio)
+        self.service._process_memo(memo)
+
+        # Simulate a subsequent startup scan: archive file exists but should not be
+        # treated as a new memo just because its stem differs from the original guid.
+        self.service._scan_archive_for_untranscribed()
+
+        with self.assertRaises(queue.Empty):
+            self.service._queue.get_nowait()
 
 
 class PathsTests(unittest.TestCase):

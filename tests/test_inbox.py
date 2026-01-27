@@ -65,6 +65,12 @@ class FakeState:
     def get_state(self, guid: str) -> tuple[Path | None, Path | None]:
         return self.data.get(guid, (None, None))
 
+    def has_archived_path(self, archived_path: Path) -> bool:
+        for _guid, (_transcript, archived) in self.data.items():
+            if archived == archived_path:
+                return True
+        return False
+
     def mark_processed(
         self,
         guid: str,

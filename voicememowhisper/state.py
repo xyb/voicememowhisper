@@ -102,6 +102,15 @@ class StateStore:
                 return transcript_path, archived_path
             return None, None
 
+    def has_archived_path(self, archived_path: Path) -> bool:
+        """Return True if any processed row references this archived_path."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT 1 FROM processed WHERE archived_path = ? LIMIT 1;",
+                (str(archived_path),),
+            )
+            return cursor.fetchone() is not None
+
     def get_all_processed(self) -> list[dict]:
         """Retrieve all processed records with metadata."""
         with self._lock:

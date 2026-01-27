@@ -519,6 +519,15 @@ class VoiceMemoService:
             return
 
         for path in paths:
+            # If this archive file is already referenced by any processed memo, it should
+            # not be treated as a new work item. This avoids reprocessing the same memo
+            # just because the archive filename differs from the original GUID.
+            try:
+                if self.state.has_archived_path(path):
+                    continue
+            except AttributeError:
+                # Backward compatible with older StateStore implementations.
+                pass
             guid = path.stem
             transcript_path, _archived_path = self.state.get_state(guid)
             if transcript_path:
