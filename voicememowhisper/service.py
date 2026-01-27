@@ -55,7 +55,7 @@ class VoiceMemoService:
 
         if self.settings.archive_enabled and self.settings.archive_dir and not self.settings.archive_dir.exists():
             self.settings.archive_dir.mkdir(parents=True, exist_ok=True)
-            LOGGER.info("Created archive directory at %s", self.settings.archive_dir)
+            LOGGER.info("Created archive directory at %s", self.settings.archive_dir, extra={"verbosity": 1})
 
         try:
             next(self.settings.recordings_dir.glob("*.m4a"))
@@ -99,17 +99,17 @@ class VoiceMemoService:
                     # Auto-enable archive when inbox is used
                     if not self.settings.archive_enabled:
                         self.settings = replace(self.settings, archive_enabled=True)
-                        LOGGER.info("Auto-enabled archive mode for Inbox processing")
+                        LOGGER.info("Auto-enabled archive mode for Inbox processing", extra={"verbosity": 1})
                     # Ensure archive directory exists
                     if self.settings.archive_dir and not self.settings.archive_dir.exists():
                         self.settings.archive_dir.mkdir(parents=True, exist_ok=True)
-                        LOGGER.info("Created archive directory at %s", self.settings.archive_dir)
+                        LOGGER.info("Created archive directory at %s", self.settings.archive_dir, extra={"verbosity": 1})
             except Exception as err:
-                LOGGER.debug("Inbox directory check failed (non-fatal): %s", err)
+                LOGGER.debug("Inbox directory check failed (non-fatal): %s", err, extra={"verbosity": 2})
 
     def start(self, watch: bool = False) -> None:
         """Start the worker thread and optionally the filesystem watcher."""
-        LOGGER.info("Starting Voice Memo transcription service")
+        LOGGER.info("Starting Voice Memo transcription service", extra={"verbosity": 1})
         self._log_sources()
         self._worker_thread = threading.Thread(target=self._worker_loop, name="VoiceMemoWorker", daemon=True)
         self._worker_thread.start()
@@ -123,12 +123,12 @@ class VoiceMemoService:
             try:
                 self._inbox_observer = self.inbox.start_watcher()
                 if self._inbox_observer and self.settings.inbox_dir:
-                    LOGGER.info("Watching Inbox directory: %s", self.settings.inbox_dir)
+                    LOGGER.info("Watching Inbox directory: %s", self.settings.inbox_dir, extra={"verbosity": 1})
             except Exception as err:
-                LOGGER.debug("Could not watch Inbox directory (non-fatal): %s", err)
+                LOGGER.debug("Could not watch Inbox directory (non-fatal): %s", err, extra={"verbosity": 2})
 
     def stop(self) -> None:
-        LOGGER.info("Stopping Voice Memo transcription service")
+        LOGGER.info("Stopping Voice Memo transcription service", extra={"verbosity": 1})
         self._stop.set()
         if self._observer:
             self._observer.stop()
@@ -192,7 +192,7 @@ class VoiceMemoService:
 
         memo = self._memo_for_path(path)
         LOGGER.debug("Enqueueing %s (Transcribe: %s, Archive: %s)", 
-                     self._display_name(memo), needs_transcription, needs_archiving)
+                     self._display_name(memo), needs_transcription, needs_archiving, extra={"verbosity": 2})
         self._queue.put(path)
         self._inflight.add(guid)
 
@@ -207,17 +207,17 @@ class VoiceMemoService:
         recordings_override = os.environ.get("VOICE_MEMO_RECORDINGS_DIR")
         container_override = os.environ.get("VOICE_MEMO_CONTAINER")
         if recordings_override:
-            LOGGER.info("Recording source override (VOICE_MEMO_RECORDINGS_DIR): %s", self.settings.recordings_dir)
+            LOGGER.info("Recording source override (VOICE_MEMO_RECORDINGS_DIR): %s", self.settings.recordings_dir, extra={"verbosity": 1})
         elif container_override:
-            LOGGER.info("Recording source override (VOICE_MEMO_CONTAINER): %s", self.settings.recordings_dir)
+            LOGGER.info("Recording source override (VOICE_MEMO_CONTAINER): %s", self.settings.recordings_dir, extra={"verbosity": 1})
         else:
-            LOGGER.info("Recording source (default): %s", self.settings.recordings_dir)
+            LOGGER.info("Recording source (default): %s", self.settings.recordings_dir, extra={"verbosity": 1})
 
         transcript_override = os.environ.get("VOICE_MEMO_TRANSCRIPT_DIR")
         if transcript_override:
-            LOGGER.info("Transcript output override (VOICE_MEMO_TRANSCRIPT_DIR): %s", self.settings.transcript_dir)
+            LOGGER.info("Transcript output override (VOICE_MEMO_TRANSCRIPT_DIR): %s", self.settings.transcript_dir, extra={"verbosity": 1})
         else:
-            LOGGER.info("Transcript output directory (default): %s", self.settings.transcript_dir)
+            LOGGER.info("Transcript output directory (default): %s", self.settings.transcript_dir, extra={"verbosity": 1})
 
     def _worker_loop(self) -> None:
         while not self._stop.is_set():

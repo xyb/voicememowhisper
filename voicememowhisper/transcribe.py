@@ -54,7 +54,15 @@ class WhisperTranscriber:
         if self.settings.whisperkit_extra_args:
             cmd.extend(self.settings.whisperkit_extra_args)
 
-        LOGGER.info("Transcribing %s with WhisperKit (%s)", display, self.settings.whisperkit_model)
+        # Minimal mode should show only the essential progress signal.
+        LOGGER.info("Transcribing %s", display, extra={"verbosity": 0})
+        # More details with -v / -vv.
+        LOGGER.info(
+            "WhisperKit model: %s",
+            self.settings.whisperkit_model,
+            extra={"verbosity": 1},
+        )
+        LOGGER.debug("WhisperKit cmd: %s", cmd, extra={"verbosity": 2})
 
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:

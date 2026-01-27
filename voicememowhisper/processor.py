@@ -39,7 +39,7 @@ class MemoProcessor:
                     raise OSError("File size is zero while recording may still be in progress.")
                 return True
             except OSError as err:
-                LOGGER.debug("Memo %s not ready (%s). Retrying...", path.name, err)
+                LOGGER.debug("Memo %s not ready (%s). Retrying...", path.name, err, extra={"verbosity": 2})
                 time.sleep(1.0)
         return False
 
@@ -60,7 +60,7 @@ class MemoProcessor:
         display = self.metadata.display_name(memo)
 
         if memo.is_trashed:
-            LOGGER.info("Skipping trashed memo %s", display)
+            LOGGER.info("Skipping trashed memo %s", display, extra={"verbosity": 2})
             return
 
         transcript_path, archived_path = self.state.get_state(memo.guid)
@@ -71,12 +71,16 @@ class MemoProcessor:
 
         if transcript_path is None:
             filename = self.transcript_filename(memo)
-            LOGGER.info("Memo title: %s", display)
-            LOGGER.info("Transcript file: %s", filename)
+            LOGGER.info("Memo title: %s", display, extra={"verbosity": 1})
+            LOGGER.info("Transcript file: %s", filename, extra={"verbosity": 1})
 
             text = self.transcriber.transcribe(path, label=display)
             output_path = self.settings.transcript_dir / filename
-            LOGGER.info("Writing transcript for %s to %s", display, output_path.name)
+            LOGGER.info(
+                "Writing transcript to %s",
+                output_path.name,
+                extra={"verbosity": 0},
+            )
             output_path.write_text(text + "\n", encoding="utf-8")
             transcript_path = output_path
 

@@ -14,12 +14,38 @@ from .listing import collect_recordings, format_list_output
 LOGGER = logging.getLogger("cli")
 
 
-def _configure_logging(level: str) -> None:
+class _VerbosityFilter(logging.Filter):
+    """
+    Allow INFO/DEBUG logs based on -v/-vv.
+
+    - WARNING/ERROR/CRITICAL always shown
+    - INFO shown when verbosity >= record.verbosity (default 1)
+    - DEBUG shown when verbosity >= record.verbosity (default 2)
+    """
+
+    def __init__(self, verbosity: int) -> None:
+        super().__init__()
+        self._verbosity = verbosity
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno >= logging.WARNING:
+            return True
+        required = getattr(record, "verbosity", None)
+        if required is None:
+            required = 2 if record.levelno <= logging.DEBUG else 1
+        return self._verbosity >= int(required)
+
+
+def _configure_logging(level: str, verbosity: int) -> None:
     logging.basicConfig(
-        level=getattr(logging, level.upper(), logging.INFO),
+        # Keep root level permissive; filter controls what is printed.
+        level=logging.DEBUG,
         format="%(asctime)s %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
+    root = logging.getLogger()
+    for handler in root.handlers:
+        handler.addFilter(_VerbosityFilter(verbosity))
 
 
 def build_settings(args: argparse.Namespace) -> Settings:
@@ -77,6 +103,13 @@ def _list_recordings(settings: Settings) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Transcribe Apple Voice Memos with WhisperKit.")
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="count",
+        default=0,
+        help="Increase verbosity (-v for info, -vv for debug).",
+    )
     parser.add_argument("--watch", action="store_true", help="Keep running and watch for new recordings.")
     parser.add_argument(
         "--model", help="WhisperKit model identifier (default from env or 'large-v3-v20240930_turbo')."
@@ -105,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     args = parser.parse_args(argv)
-    _configure_logging(args.log_level)
+    _configure_logging(args.log_level, args.verbose)
 
     try:
         settings = build_settings(args)
@@ -126,13 +159,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         service.start(watch=args.watch)
         if args.watch:
-            logging.info("Backlog synced. Watching for new recordings. Press Ctrl+C to exit.")
+            logging.info(
+                "Backlog synced. Watching for new recordings. Press Ctrl+C to exit.",
+                extra={"verbosity": 1},
+            )
             while True:
                 time.sleep(1)
         else:
             service.join()
     except KeyboardInterrupt:
-        logging.info("Interrupted by user.")
+        logging.info("Interrupted by user.", extra={"verbosity": 1})
     finally:
         service.stop()
 

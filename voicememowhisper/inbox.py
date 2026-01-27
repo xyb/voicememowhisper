@@ -83,7 +83,7 @@ class InboxProcessor:
             if not paths:
                 return
 
-            LOGGER.info("Found %d file(s) in Inbox", len(paths))
+            LOGGER.info("Found %d file(s) in Inbox", len(paths), extra={"verbosity": 1})
 
             moved_paths: list[Path] = []
             for path in paths:
@@ -110,7 +110,7 @@ class InboxProcessor:
             return None
 
         if not self.is_audio_file(path):
-            LOGGER.debug("Skipping non-audio file in Inbox: %s", path.name)
+            LOGGER.debug("Skipping non-audio file in Inbox: %s", path.name, extra={"verbosity": 2})
             return None
 
         timestamp = self.date_from_filename_func(path)
@@ -134,15 +134,21 @@ class InboxProcessor:
             existing_hash = hash_file(archive_path_base)
             incoming_hash = hash_file(path)
             if existing_hash and incoming_hash and existing_hash == incoming_hash:
-                LOGGER.warning(
+                LOGGER.info(
                     "Inbox file %s duplicates existing archive %s; discarding inbox copy",
                     path.name,
                     archive_path_base.name,
+                    extra={"verbosity": 2},
                 )
                 try:
                     path.unlink()
                 except OSError as unlink_err:
-                    LOGGER.debug("Failed to remove duplicate Inbox file %s: %s", path.name, unlink_err)
+                    LOGGER.debug(
+                        "Failed to remove duplicate Inbox file %s: %s",
+                        path.name,
+                        unlink_err,
+                        extra={"verbosity": 2},
+                    )
                 return archive_path_base
 
         final_archive_path = resolve_conflict_path(archive_path_base)
@@ -152,7 +158,12 @@ class InboxProcessor:
             if timestamp:
                 ts = timestamp.timestamp()
                 os.utime(final_archive_path, (ts, ts))
-            LOGGER.info("Moved Inbox file %s to %s", path.name, final_archive_path.name)
+            LOGGER.info(
+                "Moved Inbox file %s to %s",
+                path.name,
+                final_archive_path.name,
+                extra={"verbosity": 1},
+            )
             return final_archive_path
         except OSError as err:
             LOGGER.error("Failed to move Inbox file %s to archive: %s", path.name, err)
