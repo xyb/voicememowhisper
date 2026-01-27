@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import re
+import subprocess
+import time
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +15,76 @@ from .naming import dedup_key, normalize_title, to_naive as naming_to_naive
 from .state import StateStore
 
 LOGGER = logging.getLogger("listing")
+
+# Examples:
+# - "estimated duration: 7113.492000 sec"
+# - "duration: 42.000000 sec"
+_AFINFO_DURATION_RE = re.compile(
+    r"(?:estimated\s+)?duration:\s*([0-9]+(?:\.[0-9]+)?)\s*sec",
+    re.IGNORECASE,
+)
+
+
+def probe_audio_duration_seconds(path: Path) -> float | None:
+    """
+    Best-effort duration probe for local audio files.
+
+    On macOS, use the built-in `afinfo` tool to avoid extra dependencies.
+    """
+    start = time.perf_counter()
+    try:
+        proc = subprocess.run(
+            ["/usr/bin/afinfo", str(path)],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=3.0,
+        )
+    except FileNotFoundError:
+        return None
+    except subprocess.TimeoutExpired:
+        LOGGER.debug(
+            "afinfo timed out for %s in %.1fms",
+            path.name,
+            (time.perf_counter() - start) * 1000.0,
+            extra={"verbosity": 2},
+        )
+        return None
+    except Exception:
+        return None
+
+    if proc.returncode != 0:
+        LOGGER.debug(
+            "afinfo failed (rc=%s) for %s in %.1fms",
+            proc.returncode,
+            path.name,
+            (time.perf_counter() - start) * 1000.0,
+            extra={"verbosity": 2},
+        )
+        return None
+
+    text = (proc.stdout or "") + "\n" + (proc.stderr or "")
+    match = _AFINFO_DURATION_RE.search(text)
+    if not match:
+        LOGGER.debug(
+            "afinfo output missing duration for %s in %.1fms",
+            path.name,
+            (time.perf_counter() - start) * 1000.0,
+            extra={"verbosity": 2},
+        )
+        return None
+    try:
+        seconds = float(match.group(1))
+        LOGGER.debug(
+            "afinfo duration=%.3fs for %s in %.1fms",
+            seconds,
+            path.name,
+            (time.perf_counter() - start) * 1000.0,
+            extra={"verbosity": 2},
+        )
+        return seconds
+    except ValueError:
+        return None
 
 
 def _format_duration(seconds: float | None) -> str:
@@ -107,8 +179,10 @@ def collect_recordings(settings: Settings) -> list[RecordingItem]:
 
         if kind == "t":
             item.has_transcript = True
+            item.transcript_path = path
         elif kind == "a":
             item.has_archive = True
+            item.archive_path = path
 
         dt_str, parsed_title = _parse_filename(path)
         if item.created_at is None:

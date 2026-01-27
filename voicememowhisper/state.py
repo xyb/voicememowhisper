@@ -87,6 +87,24 @@ class StateStore:
             )
             return cursor.fetchone() is not None
 
+    def set_duration_for_archived_path(self, archived_path: Path, duration: float) -> int:
+        """
+        Best-effort backfill for duration when we can probe it from the audio file.
+
+        Returns the number of rows updated (0 or 1 in normal usage).
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                UPDATE processed
+                SET duration = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE archived_path = ? AND duration IS NULL
+                """,
+                (float(duration), str(archived_path)),
+            )
+            self._conn.commit()
+            return int(cursor.rowcount or 0)
+
     def get_all_processed(self) -> list[dict]:
         """Retrieve all processed records with metadata."""
         with self._lock:

@@ -10,6 +10,8 @@ from pathlib import Path
 
 from .config import Settings, load_settings, DEFAULT_ARCHIVE_PATH, DEFAULT_TRANSCRIPT_PATH, DEFAULT_STATE_DB_PATH
 from .listing import collect_recordings, format_list_output
+from . import listing as listing_mod
+from .state import StateStore
 
 LOGGER = logging.getLogger("cli")
 
@@ -101,6 +103,60 @@ def _list_recordings(settings: Settings, *, limit: int = 10) -> int:
     visible = visible_all
     if limit > 0:
         visible = visible[:limit]
+
+    LOGGER.debug(
+        "List summary: total=%d shown=%d limit=%d",
+        total,
+        len(visible),
+        limit,
+        extra={"verbosity": 2},
+    )
+
+    # Fill in duration for archive-only / inbox-imported files (best-effort).
+    # Probe only for the items we are actually going to show to keep --list fast.
+    probed = 0
+    updated = 0
+    store: StateStore | None = None
+    for item in visible:
+        if item.duration is not None:
+            continue
+        if not item.has_archive or item.archive_path is None:
+            continue
+        try:
+            seconds = listing_mod.probe_audio_duration_seconds(item.archive_path)
+        except Exception as err:
+            LOGGER.debug(
+                "Duration probe failed for %s: %s",
+                item.archive_path.name,
+                err,
+                extra={"verbosity": 2},
+            )
+            seconds = None
+        if seconds is not None:
+            item.duration = seconds
+            probed += 1
+            # Persist best-effort duration back to our state DB to avoid re-probing next time.
+            try:
+                if store is None:
+                    store = StateStore(settings.state_db)
+                updated += store.set_duration_for_archived_path(item.archive_path, seconds)
+            except Exception as err:
+                LOGGER.debug(
+                    "Failed to persist duration for %s: %s",
+                    item.archive_path.name,
+                    err,
+                    extra={"verbosity": 2},
+                )
+
+    if probed:
+        LOGGER.debug(
+            "Filled duration from audio probe for %d item(s) (persisted=%d)",
+            probed,
+            updated,
+            extra={"verbosity": 2},
+        )
+    if store is not None:
+        store.close()
 
     shown = len(visible)
     output = format_list_output(visible, shown=shown, total=total)

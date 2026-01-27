@@ -13,6 +13,7 @@ import voicememowhisper.listing as listing
 from voicememowhisper.cli import _format_duration, _list_recordings, _parse_filename, build_settings
 from voicememowhisper.config import Settings
 from voicememowhisper.metadata import VoiceMemo
+from voicememowhisper.state import StateStore
 
 
 class FakeStateStore:
@@ -215,4 +216,92 @@ def test_list_recordings_limit_can_be_overridden(tmp_path, monkeypatch, capsys) 
     assert "Title (5/12)" in out
     item_lines = [ln for ln in out.splitlines() if ln.startswith(("✓", ".")) and len(ln) >= 3]
     assert len(item_lines) == 5
+
+
+def test_list_recordings_shows_duration_for_archive_only(tmp_path, monkeypatch, capsys) -> None:
+    recordings = tmp_path / "recordings"
+    recordings.mkdir()
+    transcripts = tmp_path / "transcripts"
+    transcripts.mkdir()
+    archive = tmp_path / "archive"
+    archive.mkdir()
+
+    settings = Settings(
+        container_root=tmp_path,
+        recordings_dir=recordings,
+        metadata_db=tmp_path / "metadata.db",
+        legacy_metadata_db=None,
+        transcript_dir=transcripts,
+        archive_dir=archive,
+        archive_enabled=False,
+        inbox_dir=None,
+        state_db=tmp_path / "state.sqlite",
+        whisperkit_cli="whisperkit-cli",
+        whisperkit_model="dummy-model",
+        whisperkit_extra_args=(),
+        language=None,
+        processing_order="newest-first",
+    )
+
+    # An archive-only file (e.g. imported via Inbox) should still show a duration.
+    (archive / "2026-01-27_09-30-03_example_import.m4a").write_bytes(b"not-real-audio")
+
+    monkeypatch.setattr(listing, "StateStore", FakeStateStore)
+    monkeypatch.setattr(listing, "list_voice_memos", lambda _settings: [])
+    monkeypatch.setattr(listing, "probe_audio_duration_seconds", lambda _path: 65.0)
+
+    rc = _list_recordings(settings, limit=0)
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "1m05s" in out
+
+
+def test_list_recordings_persists_probed_duration_to_state_db(tmp_path, monkeypatch, capsys) -> None:
+    recordings = tmp_path / "recordings"
+    recordings.mkdir()
+    transcripts = tmp_path / "transcripts"
+    transcripts.mkdir()
+    archive = tmp_path / "archive"
+    archive.mkdir()
+
+    state_db = tmp_path / "state.sqlite"
+    settings = Settings(
+        container_root=tmp_path,
+        recordings_dir=recordings,
+        metadata_db=tmp_path / "metadata.db",
+        legacy_metadata_db=None,
+        transcript_dir=transcripts,
+        archive_dir=archive,
+        archive_enabled=False,
+        inbox_dir=None,
+        state_db=state_db,
+        whisperkit_cli="whisperkit-cli",
+        whisperkit_model="dummy-model",
+        whisperkit_extra_args=(),
+        language=None,
+        processing_order="newest-first",
+    )
+
+    audio = archive / "2026-01-27_09-30-03_example_import.m4a"
+    audio.write_bytes(b"not-real-audio")
+    transcript = transcripts / "2026-01-27_09-30-03_example_import.txt"
+    transcript.write_text("t")
+
+    # Seed state row with NULL duration.
+    store = StateStore(state_db)
+    store.mark_processed(guid="uuid-guid", transcript_path=transcript, archived_path=audio, duration=None)
+    store.close()
+
+    monkeypatch.setattr(listing, "list_voice_memos", lambda _settings: [])
+    monkeypatch.setattr(listing, "probe_audio_duration_seconds", lambda _path: 65.0)
+
+    rc = _list_recordings(settings, limit=0)
+    assert rc == 0
+    _ = capsys.readouterr().out
+
+    # Verify duration persisted.
+    conn = StateStore(state_db)
+    rows = conn.get_all_processed()
+    conn.close()
+    assert rows and rows[0].get("duration") == 65.0
 
