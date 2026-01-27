@@ -5,6 +5,8 @@ import threading
 from pathlib import Path
 from typing import Iterable, Set, Optional
 
+from .state_schema import ensure_schema
+
 
 class StateStore:
     """Persist processed voice memo GUIDs in a sqlite database."""
@@ -13,33 +15,7 @@ class StateStore:
         self.path = path
         self._conn = sqlite3.connect(str(self.path), check_same_thread=False)
         self._lock = threading.Lock()
-        self._conn.execute("PRAGMA journal_mode=WAL;")
-        self._conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS processed (
-                guid TEXT PRIMARY KEY,
-                transcript_path TEXT NOT NULL,
-                archived_path TEXT, -- New column for archived file path
-                title TEXT,
-                duration REAL,
-                created_at TEXT,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            """
-        )
-        # Add columns if they don't exist (for backward compatibility)
-        cursor = self._conn.execute("PRAGMA table_info(processed)")
-        columns = [row[1] for row in cursor.fetchall()]
-        
-        if "archived_path" not in columns:
-            self._conn.execute("ALTER TABLE processed ADD COLUMN archived_path TEXT")
-        if "title" not in columns:
-            self._conn.execute("ALTER TABLE processed ADD COLUMN title TEXT")
-        if "duration" not in columns:
-            self._conn.execute("ALTER TABLE processed ADD COLUMN duration REAL")
-        if "created_at" not in columns:
-            self._conn.execute("ALTER TABLE processed ADD COLUMN created_at TEXT")
-            
+        ensure_schema(self._conn)
         self._conn.commit()
 
     def close(self) -> None:

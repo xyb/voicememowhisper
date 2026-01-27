@@ -1,0 +1,79 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Sequence
+
+MAC_EPOCH = datetime(2001, 1, 1, tzinfo=timezone.utc)
+
+GUID_COLUMNS: Sequence[str] = (
+    "ZUNIQUEID",
+    "ZUUID",
+    "ZCLOUDUUID",
+    "ZIDENTIFIER",
+    "ZGUID",
+    "Z_PK",
+)
+
+TITLE_COLUMNS: Sequence[str] = (
+    "ZENCRYPTEDTITLE",
+    "ZCUSTOMLABEL",
+    "ZCUSTOMLABELFORSORTING",
+    "ZDISPLAYTITLE",
+    "ZTITLE",
+    "ZNAME",
+    "ZGENERICNAME",
+)
+
+DATE_COLUMNS: Sequence[str] = (
+    "ZCREATIONDATE",
+    "ZCACHEDRECORDINGDATE",
+    "ZDATE",
+    "ZRECORDINGDATE",
+    "ZMODIFICATIONDATE",
+)
+
+DURATION_COLUMNS: Sequence[str] = (
+    "ZDURATION",
+    "ZLOCALDURATION",
+    "ZCACHEDDURATION",
+    "ZTRIMMEDDURATION",
+    "ZCACHEDTRIMMEDDURATION",
+    "ZLENGTH",
+)
+
+PATH_COLUMNS: Sequence[str] = (
+    "ZRELATIVEPATH",
+    "ZPATHRELATIVE",
+    "ZPATH",
+    "ZLOCALPATH",
+    "ZLOCALIZEDPATH",
+    "ZCACHEDPATH",
+    "ZCACHEDFILEPATH",
+    "ZFILEPATH",
+    "ZCLOUDLOCALPATHRELATIVE",
+    "ZCACHEDPATHRELATIVE",
+    "ZPATHRELATIVESTRING",
+)
+
+TRASH_COLUMNS: Sequence[str] = (
+    "ZTRASHEDDATE",
+    "ZTRASHED",
+    "ZMARKEDFORDELETION",
+    "ZMARKEDTRASHED",
+    "ZISDELETED",
+    "ZISPENDINGDELETE",
+    "ZINTRASH",
+    "ZNEEDSDELETE",
+    "ZEVICTIONDATE",
+)
+
+REFERENCE_COLUMNS: Sequence[str] = (
+    "ZMETADATA",
+    "ZTITLEMETADATA",
+    "ZCACHEDMETADATA",
+    "ZCACHEDTITLEMETADATA",
+    "ZRECENTITEM",
+    "ZRECENTSITEM",
+    "ZNAMEITEM",
+)
+
