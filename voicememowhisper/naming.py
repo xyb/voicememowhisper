@@ -5,19 +5,38 @@ from datetime import datetime
 
 
 def sanitize_filename(value: str) -> str:
-    safe_chars = []
+    """
+    Sanitize a string for use as a filename.
+
+    Policy: keep Unicode punctuation (e.g. Chinese '：，') intact; only replace
+    characters that are invalid or commonly problematic in POSIX paths:
+    - path separator '/' and NUL
+    - ASCII control chars
+    """
+    if not value:
+        return "untitled"
+
+    out: list[str] = []
     for ch in value:
-        if ch.isalnum() or ch in ("-", "_", " "):
-            safe_chars.append(ch)
-        else:
-            safe_chars.append("_")
-    return "".join(safe_chars).strip() or "untitled"
+        code = ord(ch)
+        if ch == "/" or code == 0:
+            out.append("_")
+            continue
+        if code < 32 or code == 127:
+            out.append("_")
+            continue
+        out.append(ch)
+
+    sanitized = "".join(out).strip()
+    return sanitized or "untitled"
 
 
 def normalize_title(value: str | None) -> str:
     if not value:
         return ""
-    return re.sub(r"[^\w]+", "", value).lower()
+    # Treat underscores as separators (they may come from previous sanitization),
+    # so remove them too.
+    return re.sub(r"[\W_]+", "", value).lower()
 
 
 _TIMESTAMPED_STEM_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})_(.*)$")

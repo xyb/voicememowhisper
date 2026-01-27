@@ -14,11 +14,17 @@ from voicememowhisper.naming import (
 
 def test_sanitize_filename() -> None:
     assert sanitize_filename("a/b") == "a_b"
+    # Use synthetic titles in tests; never include real memo titles/names.
+    assert sanitize_filename("面试：示例候选人，数据工程师") == "面试：示例候选人，数据工程师"
     assert sanitize_filename("  ") == "untitled"
 
 
 def test_normalize_title() -> None:
     assert normalize_title("Hello, World!") == "helloworld"
+    expected = "面试示例候选人数据工程师"
+    assert normalize_title("面试_示例候选人_数据工程师") == expected
+    assert normalize_title("面试 示例候选人 数据工程师") == expected
+    assert normalize_title("面试：示例候选人，数据工程师") == expected
     assert normalize_title(None) == ""
 
 
