@@ -4,8 +4,13 @@ import logging
 from pathlib import Path
 from typing import Callable
 
-from watchdog.events import FileSystemEvent, FileSystemEventHandler
-from watchdog.observers import Observer
+try:  # pragma: no cover - exercised in integration environments
+    from watchdog.events import FileSystemEvent, FileSystemEventHandler
+    from watchdog.observers import Observer
+except ModuleNotFoundError:  # pragma: no cover
+    FileSystemEvent = object  # type: ignore[assignment]
+    FileSystemEventHandler = object  # type: ignore[assignment]
+    Observer = object  # type: ignore[assignment]
 
 LOGGER = logging.getLogger("watcher")
 
@@ -41,6 +46,11 @@ class RecordingHandler(FileSystemEventHandler):
 
 def start_watcher(directory: Path, callback: Callable[[Path], None], extensions: tuple[str, ...] = (".m4a",)) -> Observer:
     """Start a watchdog observer for the given directory."""
+    if Observer is object:  # type: ignore[comparison-overlap]  # pragma: no cover
+        raise ModuleNotFoundError(
+            "watchdog is required for --watch mode. Install it (e.g. `pip install watchdog`) "
+            "or run without --watch."
+        )
     observer = Observer()
     observer.schedule(RecordingHandler(callback, extensions), str(directory), recursive=False)
     observer.start()

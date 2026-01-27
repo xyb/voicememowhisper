@@ -6,72 +6,38 @@ import shutil
 import threading
 import time
 import os
-import re
-import hashlib
 from datetime import datetime
 from dataclasses import replace
 from pathlib import Path
 from typing import Optional, Set
 
-from watchdog.observers import Observer
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover
+    from watchdog.observers import Observer  # type: ignore
 
 from .config import Settings, load_settings
-from .metadata import VoiceMemo, load_voice_memos, resolve_created_at
+from .metadata import VoiceMemo, resolve_created_at, load_voice_memos
 from .paths import ensure_directories
 from .state import StateStore
 from .transcribe import WhisperTranscriber
 from .watcher import start_watcher
 from .naming import sanitize_filename, title_from_stem
+from .archive import ArchiveManager, hash_file as _archive_hash_file
+from .inbox import InboxProcessor, date_from_filename as _inbox_date_from_filename
+from .metadata_cache import MetadataCache
+from .processor import MemoProcessor
 
 LOGGER = logging.getLogger("service")
 
-def _archive_filename(memo: VoiceMemo) -> str:
-    """Generate archive filename with timestamp and sanitized title."""
-    timestamp = resolve_created_at(memo)
-    if timestamp is None:
-        timestamp_str = "undated"
-    else:
-        timestamp_str = timestamp.strftime("%Y-%m-%d_%H-%M-%S")
-    title = memo.title or memo.guid
-    return f"{timestamp_str}_{sanitize_filename(title)}.m4a"
-
-
 def _hash_file(path: Path, chunk_size: int = 1024 * 1024) -> Optional[str]:
     """Return hex digest of file content or None on error."""
-    sha = hashlib.sha256()
-    try:
-        with path.open("rb") as fh:
-            while True:
-                chunk = fh.read(chunk_size)
-                if not chunk:
-                    break
-                sha.update(chunk)
-    except OSError as err:
-        LOGGER.debug("Failed to hash %s: %s", path, err)
-        return None
-    return sha.hexdigest()
+    return _archive_hash_file(path, chunk_size=chunk_size)
 
 
 def _date_from_filename(path: Path) -> Optional[datetime]:
     """Extract a leading YYYY-MM-DD from the filename stem if present."""
-    match = re.match(r"^(\d{4}-\d{2}-\d{2})", path.stem)
-    if not match:
-        return None
-    try:
-        parsed_date = datetime.strptime(match.group(1), "%Y-%m-%d")
-    except ValueError:
-        return None
-
-    # Preserve the time component from the file's current mtime if available.
-    try:
-        mtime = path.stat().st_mtime
-        current_dt = datetime.fromtimestamp(mtime)
-        parsed_date = parsed_date.replace(
-            hour=current_dt.hour, minute=current_dt.minute, second=current_dt.second
-        )
-    except OSError:
-        pass
-    return parsed_date
+    return _inbox_date_from_filename(path)
 
 
 class VoiceMemoService:
@@ -105,10 +71,25 @@ class VoiceMemoService:
         self._queue: "queue.Queue[Path]" = queue.Queue()
         self._stop = threading.Event()
         self._worker_thread: Optional[threading.Thread] = None
-        self._observer: Optional[Observer] = None
-        self._inbox_observer: Optional[Observer] = None
+        self._observer: Optional["Observer"] = None
+        self._inbox_observer: Optional["Observer"] = None
         self.state = StateStore(self.settings.state_db)
-        self._metadata: dict[str, VoiceMemo] = {}
+        # These are dependency-injected so tests can monkeypatch `voicememowhisper.service.*`
+        self._metadata_cache = MetadataCache(self.settings, loader=load_voice_memos)
+        self.archive = ArchiveManager(self.settings, copy2=shutil.copy2)
+        self.processor = MemoProcessor(
+            settings=self.settings,
+            transcriber=self.transcriber,
+            archive=self.archive,
+            state=self.state,
+            metadata=self._metadata_cache,
+        )
+        self.inbox = InboxProcessor(
+            self.settings,
+            self.archive,
+            self.enqueue_path,
+            date_from_filename_func=_date_from_filename,
+        )
         self._inflight: Set[str] = set()
 
         # Handle Inbox directory: auto-enable archive if inbox exists
@@ -139,19 +120,12 @@ class VoiceMemoService:
             self._observer = start_watcher(self.settings.recordings_dir, self.enqueue_path)
             
             # Also watch Inbox directory if configured
-            if self.settings.inbox_dir:
-                try:
-                    if self.settings.inbox_dir.exists():
-                        # Watch for multiple audio formats in Inbox
-                        inbox_extensions = (".m4a", ".mp3", ".wav", ".m4v", ".aac")
-                        self._inbox_observer = start_watcher(
-                            self.settings.inbox_dir, 
-                            self._handle_inbox_file,
-                            extensions=inbox_extensions
-                        )
-                        LOGGER.info("Watching Inbox directory: %s", self.settings.inbox_dir)
-                except Exception as err:
-                    LOGGER.debug("Could not watch Inbox directory (non-fatal): %s", err)
+            try:
+                self._inbox_observer = self.inbox.start_watcher()
+                if self._inbox_observer and self.settings.inbox_dir:
+                    LOGGER.info("Watching Inbox directory: %s", self.settings.inbox_dir)
+            except Exception as err:
+                LOGGER.debug("Could not watch Inbox directory (non-fatal): %s", err)
 
     def stop(self) -> None:
         LOGGER.info("Stopping Voice Memo transcription service")
@@ -168,7 +142,7 @@ class VoiceMemoService:
         self.state.close()
 
     def enqueue_existing(self) -> None:
-        self._refresh_metadata()
+        self._metadata_cache.refresh()
         try:
             paths = list(self.settings.recordings_dir.glob("*.m4a"))
         except PermissionError as err:
@@ -223,19 +197,11 @@ class VoiceMemoService:
         self._inflight.add(guid)
 
     def _refresh_metadata(self) -> None:
-        try:
-            self._metadata = load_voice_memos(self.settings)
-        except PermissionError as err:
-            LOGGER.warning("Metadata access denied: %s", err)
-            self._metadata = {}
+        # Backward-compatible wrapper (prefer MetadataCache directly).
+        self._metadata_cache.refresh()
 
     def _display_name(self, memo: VoiceMemo) -> str:
-        if memo.title:
-            title = memo.title.strip()
-            if title:
-                return title
-        stem = memo.path.stem
-        return stem or memo.guid
+        return self._metadata_cache.display_name(memo)
 
     def _log_sources(self) -> None:
         recordings_override = os.environ.get("VOICE_MEMO_RECORDINGS_DIR")
@@ -275,238 +241,25 @@ class VoiceMemoService:
                 self._inflight.discard(guid)
 
     def _memo_for_path(self, path: Path) -> VoiceMemo:
-        guid = path.stem
-        memo = self._metadata.get(guid)
-        if memo and memo.title:
-            if memo.path != path:
-                memo = replace(memo, path=path)
-                self._metadata[guid] = memo
-            return memo
-        self._refresh_metadata()
-        memo = self._metadata.get(guid)
-        if memo:
-            if memo.path != path:
-                memo = replace(memo, path=path)
-                self._metadata[guid] = memo
-            return memo
-        memo = VoiceMemo(guid=guid, path=path)
-        self._metadata[guid] = memo
-        return memo
+        return self._metadata_cache.get_memo(path)
 
     def _transcript_filename(self, memo: VoiceMemo) -> str:
-        """
-        Build transcript filename as: <timestamp>_<title>.txt
-
-        Title is derived from metadata when available; otherwise derived from filename stem.
-        """
-        ts = resolve_created_at(memo)
-        ts_str = ts.strftime("%Y-%m-%d_%H-%M-%S") if ts else "undated"
-        title = memo.title or title_from_stem(memo.path.stem)
-        return f"{ts_str}_{sanitize_filename(title)}.txt"
+        return self.processor.transcript_filename(memo)
 
     def _process_memo(self, memo: VoiceMemo) -> None:
-        path = memo.path
-        display = self._display_name(memo)
-        if not path.exists():
-            LOGGER.warning("Skipping missing memo %s", display)
-            return
-
-        # Newly recorded files may still be written; retry a few times.
-        for attempt in range(3):
-            try:
-                # Ensure file readable and non-empty
-                if path.stat().st_size == 0:
-                    raise OSError("File size is zero while recording may still be in progress.")
-                break
-            except OSError as err:
-                LOGGER.debug("Memo %s not ready (%s). Retrying...", display, err)
-                time.sleep(1.0)
-        else:
-            LOGGER.error("Giving up on %s after repeated readiness checks", display)
-            return
-
-        self._refresh_metadata()
-        memo = self._memo_for_path(path)
-        display = self._display_name(memo)
-
-        if memo.is_trashed:
-            LOGGER.info("Skipping trashed memo %s", display)
-            return
-
-        transcript_path, archived_path = self.state.get_state(memo.guid)
-
-        # Inbox files are moved into archive_dir before processing; if we are already
-        # operating on a file inside the archive directory, skip duplicate archiving.
-        if archived_path is None and self.settings.archive_dir:
-            try:
-                if path.resolve().is_relative_to(self.settings.archive_dir.resolve()):
-                    archived_path = path
-            except Exception:
-                pass
-
-        # 1. Transcription
-        if transcript_path is None:
-            filename = self._transcript_filename(memo)
-            LOGGER.info("Memo title: %s", display)
-            LOGGER.info("Transcript file: %s", filename)
-
-            text = self.transcriber.transcribe(path, label=display)
-            
-            output_path = self.settings.transcript_dir / filename
-            LOGGER.info("Writing transcript for %s to %s", display, output_path.name)
-            output_path.write_text(text + "\n", encoding="utf-8")
-            transcript_path = output_path
-
-        # 2. Archiving
-        if self.settings.archive_enabled and archived_path is None:
-            archive_name = _archive_filename(memo)
-            archived_path = self._archive_memo(memo, archive_name)
-
-        # Update State (only if we have at least a transcript, which we should)
-        if transcript_path:
-            created_at = resolve_created_at(memo)
-            created_at_str = created_at.isoformat() if created_at else None
-            
-            self.state.mark_processed(
-                guid=memo.guid,
-                transcript_path=transcript_path,
-                archived_path=archived_path,
-                title=memo.title,
-                duration=memo.duration_seconds,
-                created_at=created_at_str
-            )
+        self.processor.process(memo)
 
     def _archive_memo(self, memo: VoiceMemo, archive_filename: str) -> Optional[Path]:
-        if not self.settings.archive_dir:
-            return None
-
-        archive_path_base = self.settings.archive_dir / archive_filename
-        
-        final_archive_path = archive_path_base
-        counter = 1
-        while final_archive_path.exists():
-            final_archive_path = archive_path_base.with_stem(f"{archive_path_base.stem}_{counter}")
-            counter += 1
-
-        try:
-            shutil.copy2(memo.path, final_archive_path)
-            LOGGER.info("Archived %s to %s", self._display_name(memo), final_archive_path.name)
-            return final_archive_path
-        except OSError as err:
-            LOGGER.error("Failed to archive %s: %s", self._display_name(memo), err)
-            return None
+        display = self._display_name(memo)
+        # Create a per-call manager so tests can monkeypatch `voicememowhisper.service.shutil.copy2`.
+        archive = ArchiveManager(self.settings, copy2=shutil.copy2)
+        return archive.archive_copy(memo.path, archive_filename, display_name=display)
 
     def _process_inbox_file(self, path: Path) -> Optional[Path]:
-        """Move a file from Inbox to archive directory and return the new path."""
-        if not self.settings.archive_dir:
-            LOGGER.warning("Archive directory not configured, cannot process Inbox file %s", path.name)
-            return None
-
-        # Check if file is an audio file
-        if path.suffix.lower() not in (".m4a", ".mp3", ".wav", ".m4v", ".aac"):
-            LOGGER.debug("Skipping non-audio file in Inbox: %s", path.name)
-            return None
-
-        # Prefer date from filename prefix; fall back to ctime, then mtime
-        timestamp = _date_from_filename(path)
-        if timestamp is None:
-            try:
-                ts = path.stat().st_ctime
-                timestamp = datetime.fromtimestamp(ts)
-            except OSError:
-                timestamp = None
-        if timestamp is None:
-            try:
-                ts = path.stat().st_mtime
-                timestamp = datetime.fromtimestamp(ts)
-            except OSError:
-                timestamp = None
-
-        timestamp_str = timestamp.strftime("%Y-%m-%d_%H-%M-%S") if timestamp else "undated"
-
-        # Use filename stem as title
-        title = sanitize_filename(path.stem)
-        archive_name = f"{timestamp_str}_{title}.m4a"
-        archive_path_base = self.settings.archive_dir / archive_name
-
-        # If a file with the same name already exists, compare hashes to detect duplicates.
-        if archive_path_base.exists():
-            existing_hash = _hash_file(archive_path_base)
-            incoming_hash = _hash_file(path)
-            if existing_hash and incoming_hash and existing_hash == incoming_hash:
-                LOGGER.warning(
-                    "Inbox file %s duplicates existing archive %s; discarding inbox copy",
-                    path.name,
-                    archive_path_base.name,
-                )
-                try:
-                    path.unlink()
-                except OSError as unlink_err:
-                    LOGGER.debug("Failed to remove duplicate Inbox file %s: %s", path.name, unlink_err)
-                return archive_path_base
-
-        # Handle filename conflicts for genuinely different files
-        final_archive_path = archive_path_base
-        counter = 1
-        while final_archive_path.exists():
-            final_archive_path = archive_path_base.with_stem(f"{archive_path_base.stem}_{counter}")
-            counter += 1
-
-        try:
-            # Move file to archive directory (this removes it from Inbox)
-            shutil.move(str(path), str(final_archive_path))
-
-            # Align file times to extracted timestamp so downstream uses correct date
-            if timestamp:
-                ts = timestamp.timestamp()
-                os.utime(final_archive_path, (ts, ts))
-
-            LOGGER.info("Moved Inbox file %s to %s", path.name, final_archive_path.name)
-            return final_archive_path
-        except OSError as err:
-            LOGGER.error("Failed to move Inbox file %s to archive: %s", path.name, err)
-            return None
+        return self.inbox.process_file(path)
 
     def _scan_inbox(self) -> None:
-        """Scan Inbox directory for audio files and process them."""
-        if not self.settings.inbox_dir:
-            return
-
-        try:
-            if not self.settings.inbox_dir.exists():
-                return
-        except Exception:
-            # Directory doesn't exist or permission error, silently skip
-            return
-
-        try:
-            # Find all audio files in Inbox
-            audio_extensions = (".m4a", ".mp3", ".wav", ".m4v", ".aac")
-            paths = []
-            for ext in audio_extensions:
-                paths.extend(self.settings.inbox_dir.glob(f"*{ext}"))
-                paths.extend(self.settings.inbox_dir.glob(f"*{ext.upper()}"))
-
-            if not paths:
-                return
-
-            LOGGER.info("Found %d file(s) in Inbox", len(paths))
-
-            # Process each file: move to archive and enqueue for transcription
-            moved_paths = []
-            for path in paths:
-                moved_path = self._process_inbox_file(path)
-                if moved_path:
-                    moved_paths.append(moved_path)
-
-            # Enqueue moved files for transcription
-            for moved_path in moved_paths:
-                self.enqueue_path(moved_path)
-
-        except PermissionError as err:
-            LOGGER.warning("Unable to read Inbox directory: %s", err)
-        except Exception as err:
-            LOGGER.warning("Error scanning Inbox directory: %s", err)
+        self.inbox.scan()
 
     def _scan_archive_for_untranscribed(self) -> None:
         """Enqueue files already in archive_dir that have no transcript recorded."""
@@ -536,9 +289,7 @@ class VoiceMemoService:
 
     def _handle_inbox_file(self, path: Path) -> None:
         """Handle a new file detected in Inbox directory."""
-        moved_path = self._process_inbox_file(path)
-        if moved_path:
-            self.enqueue_path(moved_path)
+        self.inbox.handle_new_file(path)
 
     def join(self) -> None:
         self._queue.join()
