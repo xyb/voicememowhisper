@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import voicememowhisper.cli as cli
+import voicememowhisper.listing as listing
 from voicememowhisper.cli import _format_duration, _list_recordings, _parse_filename, build_settings
 from voicememowhisper.config import Settings
 from voicememowhisper.metadata import VoiceMemo
@@ -129,8 +130,8 @@ def test_list_recordings_dedups_same_time_and_title(tmp_path, monkeypatch, capsy
         )
     ]
 
-    monkeypatch.setattr(cli, "StateStore", FakeStateStore)
-    monkeypatch.setattr(cli, "list_voice_memos", lambda _settings: memos)
+    monkeypatch.setattr(listing, "StateStore", FakeStateStore)
+    monkeypatch.setattr(listing, "list_voice_memos", lambda _settings: memos)
     rc = _list_recordings(settings)
 
     assert rc == 0
