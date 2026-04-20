@@ -76,7 +76,10 @@ def _human_duration(sec: float) -> str:
 
 
 def _stage_header(num: int, name: str) -> str:
-    return f"[{num:02d}/{name}]"
+    # Match the `[i/N name]` prefix the StageProgress helper emits, so a
+    # `grep -E '\[[0-9]+/' run.log` catches every stage-level line
+    # regardless of whether it came from pipeline.py or progress.py.
+    return f"[{num}/{len(STEPS)} {name}]"
 
 
 def run(
@@ -149,26 +152,38 @@ def run(
 
     # ── Stage 1: Transcribe ──────────────────────────────────────────
     if from_n <= 1 <= to_n:
+        from .progress import StageProgress  # lazy so `si --help` stays light
+
         if force and transcript_path.exists():
             transcript_path.unlink()
         if transcript_path.exists():
             print(f"{_stage_header(1,'transcribe')} cached → {transcript_path}")
             transcript_obj = contracts.Transcript.from_json(transcript_path)
         else:
-            print(f"{_stage_header(1,'transcribe')} starting (model={model})...")
-            t0 = time.monotonic()
-            transcript_obj, _info = mod_transcribe.transcribe(
-                audio_path,
-                model_name=model,
-                language=language,
-                compute_type=compute_type,
-                word_timestamps=False,
-                vad_filter=True,
-            )
-            transcript_obj.to_json(transcript_path)
-            elapsed = time.monotonic() - t0
-            print(f"{_stage_header(1,'transcribe')} done: {len(transcript_obj.segments)} segments, "
-                  f"{_human_duration(elapsed)}, {_peak_rss_mb():.1f} MB RSS")
+            # ffprobe duration lets StageProgress render a real ETA bar.
+            # If ffprobe is missing or fails, total=None degrades to an
+            # indeterminate spinner; the model's own info.duration is
+            # still written into the Transcript JSON after the run.
+            audio_duration = mod_transcribe.probe_audio_duration(audio_path)
+            with StageProgress(
+                "transcribe", stage_num=1, total_stages=len(STEPS),
+                total=audio_duration,
+            ) as prog:
+                prog.note(f"model={model}")
+                transcript_obj, _info = mod_transcribe.transcribe(
+                    audio_path,
+                    model_name=model,
+                    language=language,
+                    compute_type=compute_type,
+                    word_timestamps=False,
+                    vad_filter=True,
+                    progress=prog,
+                )
+                transcript_obj.to_json(transcript_path)
+                prog.note(
+                    f"{len(transcript_obj.segments)} segments, "
+                    f"{_peak_rss_mb():.1f} MB RSS"
+                )
         print()
     elif 2 <= to_n:
         # Need transcript downstream — load cached.
@@ -177,6 +192,8 @@ def run(
 
     # ── Stage 2: Diarize ─────────────────────────────────────────────
     if from_n <= 2 <= to_n:
+        from .progress import StageProgress  # lazy so `si --help` stays light
+
         if force:
             for p in (diarization_path, embeddings_path):
                 if p.exists():
@@ -185,25 +202,31 @@ def run(
             print(f"{_stage_header(2,'diarize')} cached → {diarization_path}")
             diar_obj = contracts.Diarization.from_json(diarization_path)
         else:
-            print(f"{_stage_header(2,'diarize')} starting...")
-            t0 = time.monotonic()
-            diar_obj, duration_sec, _labels = mod_diarize.run_diarization(
-                audio_path,
-                model_name="pyannote/speaker-diarization-community-1",
-                hf_token=None,
-                num_speakers=None,
-                min_speakers=None,
-                max_speakers=None,
-                embeddings_out_path=embeddings_path,
-            )
-            diar_obj.to_json(diarization_path)
-            if duration_sec and transcript_obj is not None and transcript_obj.duration_sec == 0:
-                transcript_obj.duration_sec = duration_sec
-                transcript_obj.to_json(transcript_path)
-            elapsed = time.monotonic() - t0
-            print(f"{_stage_header(2,'diarize')} done: {diar_obj.num_speakers} speakers, "
-                  f"{len(diar_obj.segments)} segments, {_human_duration(elapsed)}, "
-                  f"{_peak_rss_mb():.1f} MB RSS")
+            # pyannote has no linear time-axis the bar can track against,
+            # so we leave total=None — the DiarizeProgressHook surfaces
+            # sub-step boundaries + per-substep counters instead.
+            with StageProgress(
+                "diarize", stage_num=2, total_stages=len(STEPS),
+            ) as prog:
+                diar_obj, duration_sec, _labels = mod_diarize.run_diarization(
+                    audio_path,
+                    model_name="pyannote/speaker-diarization-community-1",
+                    hf_token=None,
+                    num_speakers=None,
+                    min_speakers=None,
+                    max_speakers=None,
+                    embeddings_out_path=embeddings_path,
+                    progress=prog,
+                )
+                diar_obj.to_json(diarization_path)
+                if duration_sec and transcript_obj is not None and transcript_obj.duration_sec == 0:
+                    transcript_obj.duration_sec = duration_sec
+                    transcript_obj.to_json(transcript_path)
+                prog.note(
+                    f"{diar_obj.num_speakers} speakers, "
+                    f"{len(diar_obj.segments)} segments, "
+                    f"{_peak_rss_mb():.1f} MB RSS"
+                )
         print()
     elif 3 <= to_n:
         _require_cache(diarization_path, 2)

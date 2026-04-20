@@ -47,6 +47,7 @@ from pathlib import Path
 warnings.filterwarnings("ignore", message="torchcodec is not installed")
 
 from . import contracts
+from .progress import DiarizeProgressHook, StageProgress
 
 
 def peak_rss_bytes() -> int:
@@ -113,12 +114,18 @@ def run_diarization(
     min_speakers: int | None,
     max_speakers: int | None,
     embeddings_out_path: Path | None = None,
+    progress: StageProgress | None = None,
 ):
     """Run pyannote diarization.
 
     Returns (Diarization, duration_sec, speaker_label_order).
     Optionally dumps per-speaker centroid embeddings to `embeddings_out_path`
     as a .npz with keys = ordered speaker labels.
+
+    When ``progress`` is supplied, pyannote's internal sub-steps
+    (segmentation → embeddings → clustering) are surfaced through
+    ``DiarizeProgressHook`` so the caller sees sub-step boundaries and
+    throttled progress inside each sub-step.
     """
     # Lazy import so that --help works without ML stack loaded.
     import numpy as np
@@ -138,6 +145,8 @@ def run_diarization(
             kwargs["min_speakers"] = min_speakers
         if max_speakers is not None:
             kwargs["max_speakers"] = max_speakers
+    if progress is not None:
+        kwargs["hook"] = DiarizeProgressHook(progress)
 
     result = pipeline(audio_dict, **kwargs)
     # pyannote 4.0 returns DiarizeOutput dataclass:

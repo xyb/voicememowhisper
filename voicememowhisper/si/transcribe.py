@@ -41,6 +41,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import contracts
+from .progress import StageProgress
 
 
 def human_duration(sec: float) -> str:
@@ -88,8 +89,17 @@ def transcribe(
     compute_type: str,
     word_timestamps: bool,
     vad_filter: bool,
+    progress: StageProgress | None = None,
 ) -> tuple[contracts.Transcript, dict]:
-    """Run faster-whisper and return a Transcript plus raw info dict."""
+    """Run faster-whisper and return a Transcript plus raw info dict.
+
+    When ``progress`` is supplied, each segment emitted by the model
+    updates the bar at ``seg.end`` (audio seconds processed). Callers
+    that build the ``StageProgress`` outside — typically ``pipeline.run``
+    — do so with ``total=<audio duration>`` so the bar carries a
+    meaningful ETA. Without ``progress`` the iteration runs silently
+    (same behaviour as before this flag existed).
+    """
     from faster_whisper import WhisperModel
 
     # CPU on Apple Silicon. GPU would be "cuda" on Linux boxes.
@@ -126,6 +136,8 @@ def transcribe(
                 no_speech_prob=getattr(seg, "no_speech_prob", None),
             )
         )
+        if progress is not None:
+            progress.update(float(seg.end))
 
     recording_id = audio_path.stem
     tr = contracts.Transcript(
