@@ -5,3 +5,20 @@ __pycache__/
 .coverage
 *.sqlite
 tmp/
+*.egg-info/
+
+# Speaker-ID pipeline data — never commit (real names + meeting audio).
+experiments/speaker-id/speaker-library/
+experiments/speaker-id/runs/
+experiments/speaker-id/runs-large-v3/
+experiments/speaker-id/outputs/
+experiments/speaker-id/samples/
+experiments/speaker-id/speaker-library-benchmarks/
+
+# Audio / waveforms / embeddings anywhere in the tree.
+*.m4a
+*.wav
+*.mp3
+*.npy
+*.npz
+*.waveform

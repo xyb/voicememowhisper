@@ -144,18 +144,24 @@ class Settings:
     language: str | None = os.environ.get("VOICE_MEMO_LANGUAGE")
     processing_order: ProcessingOrder = parse_processing_order(os.environ.get("VOICE_MEMO_PROCESSING_ORDER"))
 
-    # Speaker-ID pipeline (replaces WhisperKit with faster-whisper + pyannote + speaker library)
+    # Speaker-ID pipeline (in-process; needs the [speaker-id] extra to be installed).
+    # All paths default into ~/.local/share/voicememowhisper/ so data stays
+    # outside the repo. Override per-deployment with the env vars below.
     speaker_pipeline_enabled: bool = os.environ.get("VOICE_MEMO_SPEAKER_PIPELINE", "1") == "1"
-    speaker_pipeline_python: str = os.environ.get(
-        "VOICE_MEMO_SPEAKER_PIPELINE_PYTHON",
-        str(Path.home() / ".virtualenvs" / "whisperx-lab-382" / "bin" / "python"),
-    )
-    speaker_pipeline_dir: Path = _env_path(
-        "VOICE_MEMO_SPEAKER_PIPELINE_DIR",
-        Path.home() / "projects" / "voicememowhisper" / "experiments" / "speaker-id",
-    )
     speaker_pipeline_model: str = os.environ.get("VOICE_MEMO_SPEAKER_PIPELINE_MODEL", "medium")
     speaker_pipeline_threshold: float = float(os.environ.get("VOICE_MEMO_SPEAKER_PIPELINE_THRESHOLD", "0.5"))
+    speaker_library_dir: Path = _env_path(
+        "VOICE_MEMO_SPEAKER_LIBRARY_DIR",
+        Path.home() / ".local" / "share" / "voicememowhisper" / "speaker-library",
+    )
+    speaker_runs_dir: Path = _env_path(
+        "VOICE_MEMO_SPEAKER_RUNS_DIR",
+        Path.home() / ".local" / "share" / "voicememowhisper" / "speaker-id" / "runs",
+    )
+    speaker_output_dir: Path = _env_path(
+        "VOICE_MEMO_SPEAKER_OUTPUT_DIR",
+        Path.home() / ".local" / "share" / "voicememowhisper" / "speaker-id" / "outputs",
+    )
 
 
 def load_settings() -> Settings:

@@ -13,8 +13,22 @@ dependencies = [
     "watchdog>=3.0",
 ]
 
+[project.optional-dependencies]
+# Speaker-ID pipeline (transcribe + diarize + identify + merge + render).
+# Heavy ML stack (~2 GB) — opt-in. Without this extra, voicememo-whisper
+# falls back to WhisperKit for the bare transcription path.
+speaker-id = [
+    "faster-whisper>=1.0",
+    "pyannote.audio>=4.0",
+    "torch",
+    "torchaudio",
+    "soundfile",
+    "numpy",
+]
+
 [project.scripts]
 voicememo-whisper = "voicememowhisper.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
+include = ["voicememowhisper*"]

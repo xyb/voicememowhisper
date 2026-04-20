@@ -1,18 +1,17 @@
-"""Speaker-ID pipeline integration.
+"""Speaker-ID pipeline integration into the watcher's transcribe path.
 
-Calls the unified pipeline (experiments/speaker-id/pipeline.py) as a subprocess,
-keeping ML dependencies isolated in the whisperx-lab venv.
+In-process wrapper around `voicememowhisper.si.pipeline.run`. Replaces
+the previous subprocess-into-a-separate-venv design now that the ML
+deps live in this project as the `[speaker-id]` extra.
 
-Produces both:
-  - transcript.md  (with speaker labels, timestamps, frontmatter)
-  - transcript.txt  (plain text with [Speaker Name] prefixes)
+Produces:
+  - <recording>.md   (with speaker labels, timestamps, frontmatter)
+  - <recording>.txt  (plain text with [Speaker Name] prefixes)
 """
 
 from __future__ import annotations
 
 import logging
-import os
-import subprocess
 import time
 from pathlib import Path
 
@@ -26,24 +25,31 @@ class SpeakerPipeline:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self._python = settings.speaker_pipeline_python
-        self._pipeline_dir = settings.speaker_pipeline_dir
-        self._pipeline_script = self._pipeline_dir / "pipeline.py"
-        self._library_dir = self._pipeline_dir / "speaker-library"
+        self._library_dir = Path(settings.speaker_library_dir)
+        self._runs_dir = Path(settings.speaker_runs_dir)
+        self._output_dir = Path(settings.speaker_output_dir)
 
     def available(self) -> bool:
-        return (
-            Path(self._python).exists()
-            and self._pipeline_script.exists()
-            and self._library_dir.exists()
-        )
+        """Return True iff the [speaker-id] extra is installed AND a non-empty
+        speaker library exists. Falls back to WhisperKit otherwise."""
+        try:
+            from . import si  # noqa: F401
+            from .si import pipeline as _pl  # noqa: F401
+        except ImportError as e:
+            LOGGER.debug("speaker-id extra not installed: %s", e)
+            return False
+        if not self._library_dir.exists():
+            return False
+        # Has at least one speaker directory with an embedding
+        for d in self._library_dir.iterdir():
+            if d.is_dir() and (d / "embedding.npy").exists():
+                return True
+        return False
 
     def transcribe(self, audio_path: Path, *, label: str | None = None) -> str:
         """Run the speaker-id pipeline. Returns the plain-text transcript.
 
         Side effect: also writes transcript.md to the transcript directory.
-        Streams pipeline stdout/stderr line-by-line to LOGGER so stage
-        progress is visible in real time (no more silent multi-minute waits).
         """
         display = label or audio_path.stem
         if not audio_path.exists():
@@ -59,59 +65,20 @@ class SpeakerPipeline:
         except OSError:
             LOGGER.info("Speaker pipeline: %s", display, extra={"verbosity": 0})
 
-        cmd = [
-            self._python,
-            str(self._pipeline_script),
-            str(audio_path),
-            "--model", self.settings.speaker_pipeline_model,
-            "--language", self.settings.language or "zh",
-            "--threshold", str(self.settings.speaker_pipeline_threshold),
-            "--library", str(self._library_dir),
-            "--output-transcript", str(self.settings.transcript_dir),
-        ]
-
-        LOGGER.debug("Speaker pipeline cmd: %s", cmd, extra={"verbosity": 2})
-
-        env = os.environ.copy()
-        env["PYTHONUNBUFFERED"] = "1"
+        from .si.pipeline import run as run_pipeline
 
         t0 = time.monotonic()
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            cwd=str(self._pipeline_dir),
-            env=env,
+        run_pipeline(
+            audio_path,
+            model=self.settings.speaker_pipeline_model,
+            language=self.settings.language or "zh",
+            library_dir=self._library_dir,
+            threshold=self.settings.speaker_pipeline_threshold,
+            runs_dir=self._runs_dir,
+            output_dir=self._output_dir,
+            output_transcript_dir=self.settings.transcript_dir,
         )
-
-        last_lines: list[str] = []
-        try:
-            assert proc.stdout is not None
-            for raw in proc.stdout:
-                line = raw.rstrip()
-                if not line:
-                    continue
-                LOGGER.info("[pipeline] %s", line, extra={"verbosity": 0})
-                last_lines.append(line)
-                if len(last_lines) > 50:
-                    last_lines = last_lines[-50:]
-        finally:
-            returncode = proc.wait()
-
         elapsed = time.monotonic() - t0
-
-        if returncode != 0:
-            tail = "\n".join(last_lines[-20:]) or "(no output)"
-            LOGGER.error(
-                "Speaker pipeline failed (exit=%s, elapsed=%.1fs):\n%s",
-                returncode, elapsed, tail,
-            )
-            raise RuntimeError(
-                f"Speaker pipeline failed for {display} "
-                f"(exit code {returncode}). See logs for details."
-            )
 
         LOGGER.info(
             "Speaker pipeline finished: %s in %.1fs",
@@ -119,16 +86,14 @@ class SpeakerPipeline:
             extra={"verbosity": 0},
         )
 
-        # Read back the plain-text transcript for backward compatibility
+        # Plain-text copy (for backward compatibility with the legacy txt path).
         recording_id = audio_path.stem
-        txt_path = self.settings.transcript_dir / f"{recording_id}.txt"
-        if txt_path.exists():
-            return txt_path.read_text(encoding="utf-8").strip()
-
-        # Fallback: read from pipeline outputs
-        outputs_txt = self._pipeline_dir / "outputs" / recording_id / "transcript.txt"
-        if outputs_txt.exists():
-            return outputs_txt.read_text(encoding="utf-8").strip()
+        for candidate in (
+            self.settings.transcript_dir / f"{recording_id}.txt",
+            self._output_dir / recording_id / "transcript.txt",
+        ):
+            if candidate.exists():
+                return candidate.read_text(encoding="utf-8").strip()
 
         LOGGER.warning("No plain-text transcript found for %s", recording_id)
         return ""

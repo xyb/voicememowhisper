@@ -186,7 +186,24 @@ def _list_recordings(settings: Settings, *, limit: int = 10) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Transcribe Apple Voice Memos with WhisperKit.")
+    # Route the `si` subcommand group to the speaker-id CLI before argparse
+    # touches the rest of the args. Keeping it as a pre-dispatch (rather than
+    # a subparser) means existing flat flags (`--watch`, `-l`, ...) keep
+    # working unchanged — this is the user-facing entry, no migration needed.
+    raw_argv = sys.argv[1:] if argv is None else list(argv)
+    if raw_argv and raw_argv[0] == "si":
+        from .si.cli import main as si_main
+        return si_main(raw_argv[1:])
+
+    parser = argparse.ArgumentParser(
+        description="Transcribe Apple Voice Memos with WhisperKit (default) or the speaker-id pipeline.",
+        epilog=(
+            "Subcommands:\n"
+            "  si <subcommand>   Speaker-ID pipeline (transcribe → diarize → identify → merge → render).\n"
+            "                    Run `voicememo-whisper si --help` or `voicememo-whisper si steps` for details."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "-v",
         "--verbose",
