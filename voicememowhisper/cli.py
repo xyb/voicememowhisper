@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sys
 import time
 import shutil
 from datetime import datetime
@@ -39,6 +40,16 @@ class _VerbosityFilter(logging.Filter):
 
 
 def _configure_logging(level: str, verbosity: int) -> None:
+    # Force line-buffered stdout/stderr so log lines flush immediately even
+    # when redirected to a file (`> run.log 2>&1`). Without this, Python uses
+    # 4 KB block buffering on non-tty streams and progress is invisible for
+    # minutes during long-running stages.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(line_buffering=True)
+        except (AttributeError, ValueError):
+            pass
+
     logging.basicConfig(
         # Keep root level permissive; filter controls what is printed.
         level=logging.DEBUG,
@@ -48,6 +59,17 @@ def _configure_logging(level: str, verbosity: int) -> None:
     root = logging.getLogger()
     for handler in root.handlers:
         handler.addFilter(_VerbosityFilter(verbosity))
+        # Wrap emit() to flush after every record, in case the underlying
+        # stream falls back to block buffering.
+        if isinstance(handler, logging.StreamHandler):
+            _orig_emit = handler.emit
+            def _flushing_emit(record, _orig=_orig_emit, _h=handler):
+                _orig(record)
+                try:
+                    _h.flush()
+                except Exception:
+                    pass
+            handler.emit = _flushing_emit  # type: ignore[assignment]
 
 
 def build_settings(args: argparse.Namespace) -> Settings:

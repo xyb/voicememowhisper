@@ -12,6 +12,7 @@ from .config import Settings
 from .metadata import VoiceMemo, resolve_created_at
 from .metadata_cache import MetadataCache
 from .naming import sanitize_filename, title_from_stem
+from .speaker_pipeline import SpeakerPipeline
 from .state import StateStore
 from .transcribe import WhisperTranscriber
 
@@ -25,6 +26,19 @@ class MemoProcessor:
     archive: ArchiveManager
     state: StateStore
     metadata: MetadataCache
+    speaker_pipeline: Optional[SpeakerPipeline] = None
+
+    def __post_init__(self) -> None:
+        if self.speaker_pipeline is None and self.settings.speaker_pipeline_enabled:
+            sp = SpeakerPipeline(self.settings)
+            if sp.available():
+                self.speaker_pipeline = sp
+                LOGGER.info("Speaker pipeline enabled", extra={"verbosity": 1})
+            else:
+                LOGGER.info(
+                    "Speaker pipeline not available, falling back to WhisperKit",
+                    extra={"verbosity": 1},
+                )
 
     def transcript_filename(self, memo: VoiceMemo) -> str:
         ts = resolve_created_at(memo)
@@ -74,15 +88,33 @@ class MemoProcessor:
             LOGGER.info("Memo title: %s", display, extra={"verbosity": 1})
             LOGGER.info("Transcript file: %s", filename, extra={"verbosity": 1})
 
-            text = self.transcriber.transcribe(path, label=display)
-            output_path = self.settings.transcript_dir / filename
-            LOGGER.info(
-                "Writing transcript to %s",
-                output_path.name,
-                extra={"verbosity": 0},
-            )
-            output_path.write_text(text + "\n", encoding="utf-8")
-            transcript_path = output_path
+            text = None
+            if self.speaker_pipeline:
+                try:
+                    LOGGER.info("Using speaker pipeline for %s", display, extra={"verbosity": 0})
+                    text = self.speaker_pipeline.transcribe(path, label=display)
+                    stem_path = self.settings.transcript_dir / f"{path.stem}.txt"
+                    if stem_path.exists():
+                        transcript_path = stem_path
+                except Exception as exc:
+                    LOGGER.warning(
+                        "Speaker pipeline failed for %s, falling back to WhisperKit: %s",
+                        display, exc,
+                    )
+                    text = None
+
+            if text is None:
+                text = self.transcriber.transcribe(path, label=display)
+
+            if transcript_path is None:
+                output_path = self.settings.transcript_dir / filename
+                LOGGER.info(
+                    "Writing transcript to %s",
+                    output_path.name,
+                    extra={"verbosity": 0},
+                )
+                output_path.write_text(text + "\n", encoding="utf-8")
+                transcript_path = output_path
 
         if self.settings.archive_enabled and archived_path is None:
             archive_name = self.archive.archive_filename(memo)
