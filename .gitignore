@@ -7,15 +7,10 @@ __pycache__/
 tmp/
 *.egg-info/
 
-# Speaker-ID pipeline data — never commit (real names + meeting audio).
-experiments/speaker-id/speaker-library/
-experiments/speaker-id/runs/
-experiments/speaker-id/runs-large-v3/
-experiments/speaker-id/outputs/
-experiments/speaker-id/samples/
-experiments/speaker-id/speaker-library-benchmarks/
-
 # Audio / waveforms / embeddings anywhere in the tree.
+# (Speaker-ID data lives under ~/.local/share/voicememowhisper/ by default,
+# so no repo-local rules are needed; these are defensive in case someone
+# points VOICE_MEMO_SPEAKER_* env vars back into the repo.)
 *.m4a
 *.wav
 *.mp3
