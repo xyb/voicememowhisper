@@ -92,10 +92,13 @@ class MemoProcessor:
             if self.speaker_pipeline:
                 try:
                     LOGGER.info("Using speaker pipeline for %s", display, extra={"verbosity": 0})
-                    text = self.speaker_pipeline.transcribe(path, label=display)
-                    stem_path = self.settings.transcript_dir / f"{path.stem}.txt"
-                    if stem_path.exists():
-                        transcript_path = stem_path
+                    target_stem = Path(filename).stem
+                    text = self.speaker_pipeline.transcribe(
+                        path, label=display, target_stem=target_stem,
+                    )
+                    target_path = self.settings.transcript_dir / filename
+                    if target_path.exists():
+                        transcript_path = target_path
                 except Exception as exc:
                     LOGGER.warning(
                         "Speaker pipeline failed for %s, falling back to WhisperKit: %s",

@@ -144,10 +144,20 @@ def _cmd_library(args: argparse.Namespace) -> int:
         if not library.exists():
             print(f"speaker library does not exist: {library}", file=sys.stderr)
             return 1
+        # Inlined clip discovery (matches `library.list_clip_wavs` behaviour:
+        # scan `<speaker>/clips/` with the same extensions). Kept stdlib-only
+        # so `library list` works without the [speaker-id] extra — which is
+        # useful for spotting an unenrolled speaker on a fresh checkout.
         print(f"library: {library}\n")
         rows = []
+        clip_exts = {".wav", ".m4a", ".flac", ".mp3", ".ogg"}
         for d in sorted(p for p in library.iterdir() if p.is_dir()):
-            clips = sorted(d.glob("*.wav")) + sorted(d.glob("*.m4a"))
+            clips_dir = d / "clips"
+            clips = (
+                sorted(p for p in clips_dir.iterdir()
+                       if p.is_file() and p.suffix.lower() in clip_exts)
+                if clips_dir.exists() else []
+            )
             embedding = d / "embedding.npy"
             rows.append((d.name, len(clips), "yes" if embedding.exists() else "NO"))
         if not rows:
@@ -165,11 +175,15 @@ def _cmd_library(args: argparse.Namespace) -> int:
         if not clip.exists():
             print(f"clip not found: {clip}", file=sys.stderr)
             return 2
-        target_dir = library / speaker
-        target_dir.mkdir(parents=True, exist_ok=True)
-        existing = sorted(target_dir.glob("[0-9][0-9][0-9].*"))
+        # Drop clips under <speaker>/clips/ so `library.list_clip_wavs` and
+        # the embedding rebuild find them. Writing to the speaker dir root
+        # (the previous behaviour) silently excluded the clip from the next
+        # centroid compute.
+        clips_dir = library / speaker / "clips"
+        clips_dir.mkdir(parents=True, exist_ok=True)
+        existing = sorted(clips_dir.glob("[0-9][0-9][0-9].*"))
         next_num = (int(existing[-1].stem) + 1) if existing else 1
-        target = target_dir / f"{next_num:03d}{clip.suffix.lower()}"
+        target = clips_dir / f"{next_num:03d}{clip.suffix.lower()}"
         shutil.copy2(clip, target)
         print(f"copied {clip} → {target}")
         if not args.no_rebuild:

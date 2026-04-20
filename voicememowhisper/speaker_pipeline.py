@@ -31,25 +31,59 @@ class SpeakerPipeline:
 
     def available(self) -> bool:
         """Return True iff the [speaker-id] extra is installed AND a non-empty
-        speaker library exists. Falls back to WhisperKit otherwise."""
+        speaker library exists. Logs the reason on False so "why did we fall
+        back to WhisperKit?" is answerable from the log alone."""
         try:
             from . import si  # noqa: F401
             from .si import pipeline as _pl  # noqa: F401
         except ImportError as e:
-            LOGGER.debug("speaker-id extra not installed: %s", e)
+            LOGGER.info(
+                "Speaker pipeline unavailable: [speaker-id] extra not installed (%s). "
+                "Install with `pip install -e \".[speaker-id]\"` to enable.",
+                e, extra={"verbosity": 0},
+            )
             return False
         if not self._library_dir.exists():
+            LOGGER.info(
+                "Speaker pipeline unavailable: speaker library dir does not exist (%s). "
+                "Set VOICE_MEMO_SPEAKER_LIBRARY_DIR or create the dir with at least one "
+                "enrolled speaker.",
+                self._library_dir, extra={"verbosity": 0},
+            )
             return False
         # Has at least one speaker directory with an embedding
         for d in self._library_dir.iterdir():
             if d.is_dir() and (d / "embedding.npy").exists():
                 return True
+        LOGGER.info(
+            "Speaker pipeline unavailable: speaker library has no enrolled embeddings (%s). "
+            "Run `voicememo-whisper si library add <speaker> <clip>` to enroll.",
+            self._library_dir, extra={"verbosity": 0},
+        )
         return False
 
-    def transcribe(self, audio_path: Path, *, label: str | None = None) -> str:
+    def transcribe(
+        self,
+        audio_path: Path,
+        *,
+        label: str | None = None,
+        target_stem: str | None = None,
+    ) -> str:
         """Run the speaker-id pipeline. Returns the plain-text transcript.
 
-        Side effect: also writes transcript.md to the transcript directory.
+        Parameters
+        ----------
+        audio_path
+            The Voice Memo audio file to process.
+        label
+            Human-readable name used in log lines.
+        target_stem
+            If given, the copies of `transcript.md` / `transcript.txt` landing
+            in `transcript_dir` will be renamed from the audio-stem default
+            (e.g. `20260420 110030`) to this value — typically the canonical
+            `YYYY-MM-DD_HH-MM-SS_<title>` stem the watcher uses so the output
+            stays consistent with the pre-speaker-ID naming convention and
+            existing vault backlinks keep working.
         """
         display = label or audio_path.stem
         if not audio_path.exists():
@@ -86,14 +120,35 @@ class SpeakerPipeline:
             extra={"verbosity": 0},
         )
 
-        # Plain-text copy (for backward compatibility with the legacy txt path).
-        recording_id = audio_path.stem
+        # Pipeline always names its copies after the audio stem; rename to
+        # the watcher's canonical stem so vault backlinks (frontmatter
+        # `transcript_file: YYYY-MM-DD_HH-MM-SS_<title>.txt`) stay valid.
+        audio_stem = audio_path.stem
+        stem_txt = self.settings.transcript_dir / f"{audio_stem}.txt"
+        stem_md = self.settings.transcript_dir / f"{audio_stem}.md"
+        if target_stem and target_stem != audio_stem:
+            for src, ext in ((stem_txt, ".txt"), (stem_md, ".md")):
+                if src.exists():
+                    dst = self.settings.transcript_dir / f"{target_stem}{ext}"
+                    if dst.exists():
+                        dst.unlink()
+                    src.rename(dst)
+                    LOGGER.info(
+                        "Renamed %s → %s", src.name, dst.name,
+                        extra={"verbosity": 1},
+                    )
+
+        final_txt = (
+            self.settings.transcript_dir / f"{target_stem}.txt"
+            if target_stem
+            else stem_txt
+        )
         for candidate in (
-            self.settings.transcript_dir / f"{recording_id}.txt",
-            self._output_dir / recording_id / "transcript.txt",
+            final_txt,
+            self._output_dir / audio_stem / "transcript.txt",
         ):
             if candidate.exists():
                 return candidate.read_text(encoding="utf-8").strip()
 
-        LOGGER.warning("No plain-text transcript found for %s", recording_id)
+        LOGGER.warning("No plain-text transcript found for %s", audio_stem)
         return ""

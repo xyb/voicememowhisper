@@ -2,12 +2,15 @@
 
 This project watches the local Apple Voice Memos library and feeds new recordings to WhisperKit for transcription. It is designed to run locally on macOS so recordings never leave the machine.
 
+Optionally, the included **speaker-ID pipeline** (`voicememo-whisper si`) replaces the plain transcription path with a multi-speaker flow: transcribe (faster-whisper) → diarize (pyannote) → identify (against a local speaker library) → merge → render. When enabled, transcripts ship with per-turn speaker labels and a ready-to-review `transcript.md`.
+
 ## Features
 
 - **Automatic Transcription**: Watches for new Voice Memos and transcribes them using WhisperKit.
 - **Audio Archiving**: Optionally copies the original `.m4a` files to a separate directory (`--archive`), allowing you to safely delete them from the Voice Memos app to free up storage space while keeping a backup.
 - **Inbox Import**: Optionally process external audio dropped into an Inbox directory (e.g. from iOS) and move it into the archive before transcribing.
 - **Listing**: The `--list` command lists all recordings with their transcription and archiving status.
+- **Speaker-ID pipeline** (optional): in-process 5-stage pipeline exposed as `voicememo-whisper si`, with stage caching and partial-range re-runs (`si run --from merge --to render`).
 
 ## Setup
 
@@ -29,6 +32,16 @@ Continuous watching mode (`--watch`) uses `watchdog`. If you only use one-off ru
 ```bash
 python -m pip install watchdog
 ```
+
+### Optional extra: speaker-id pipeline
+
+Install once with the `[speaker-id]` extra to pull the ML stack (faster-whisper, pyannote.audio, torch, …):
+
+```bash
+python -m pip install -e ".[speaker-id]"
+```
+
+Without this extra, `voicememo-whisper` keeps working on the WhisperKit-only path; the speaker-ID subcommands are still available for `--help` / `steps` / `library list` / `inspect`, but any step that actually crunches audio will refuse to run.
 
 ## Usage
 
@@ -76,6 +89,37 @@ TAS  When                 Duration  Title (3/3)
 ✓✓x  2025-12-13 10:11:16  -         Sample Recording 3 (source deleted)
 ```
 
+### Speaker-ID pipeline (`si`) usage
+
+Five stages — each can run alone, and `run` plays any contiguous range:
+
+```bash
+# Full pipeline (stage cache reused unless --force)
+voicememo-whisper si run /path/to/recording.m4a
+
+# Re-run merge + render after tweaking rules (upstream cached)
+voicememo-whisper si run /path/to/recording.m4a --from merge --to render --force
+
+# Single stage (always forces re-run)
+voicememo-whisper si render /path/to/recording.m4a
+
+# Ordered list of stages (position shown in each subcommand's --help too)
+voicememo-whisper si steps
+
+# Which stages have cached output for a recording?
+voicememo-whisper si inspect /path/to/recording.m4a
+
+# Speaker library management
+voicememo-whisper si library list
+voicememo-whisper si library add <speaker> /path/to/clip.wav
+voicememo-whisper si library rebuild --speaker <speaker>
+```
+
+Default paths (overridable via env):
+- Speaker library → `~/.local/share/voicememowhisper/speaker-library/`
+- Stage intermediates (runs) → `~/.local/share/voicememowhisper/speaker-id/runs/`
+- Final outputs → `~/.local/share/voicememowhisper/speaker-id/outputs/`
+
 ## Data Locations
 
 By default, the tool organizes outputs under `~/Documents/VoiceMemoWhisper/`:
@@ -98,6 +142,12 @@ Override paths or defaults via environment variables:
 - `VOICE_MEMO_WHISPERKIT_CLI` – path to `whisperkit-cli`.
 - `VOICE_MEMO_WHISPERKIT_MODEL` – WhisperKit model identifier.
 - `VOICE_MEMO_LANGUAGE` – language hint.
+- `VOICE_MEMO_SPEAKER_PIPELINE` – set to `0` to disable the speaker-ID pipeline even if installed.
+- `VOICE_MEMO_SPEAKER_PIPELINE_MODEL` – faster-whisper model name (default `medium`).
+- `VOICE_MEMO_SPEAKER_PIPELINE_THRESHOLD` – cosine match threshold against the speaker library (default `0.5`).
+- `VOICE_MEMO_SPEAKER_LIBRARY_DIR` – path to the speaker library.
+- `VOICE_MEMO_SPEAKER_RUNS_DIR` – stage intermediate directory.
+- `VOICE_MEMO_SPEAKER_OUTPUT_DIR` – final outputs directory.
 
 ## Development
 
