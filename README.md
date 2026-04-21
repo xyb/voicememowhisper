@@ -116,9 +116,9 @@ voicememo-whisper si library rebuild --speaker <speaker>
 ```
 
 Default paths (overridable via env):
-- Speaker library → `~/.local/share/voicememowhisper/speaker-library/`
-- Stage intermediates (runs) → `~/.local/share/voicememowhisper/speaker-id/runs/`
-- Final outputs → `~/.local/share/voicememowhisper/speaker-id/outputs/`
+- Speaker library → `~/Documents/VoiceMemoWhisper/speaker-library/` (durable; co-located with Audio/ and Transcripts/ so a single backup of that folder covers everything hand-curated)
+- Stage intermediates (runs) → `~/.local/share/voicememowhisper/speaker-id/runs/` (cache; rebuildable)
+- Final outputs → `~/.local/share/voicememowhisper/speaker-id/outputs/` (cache; rebuildable)
 
 ## Data Locations
 

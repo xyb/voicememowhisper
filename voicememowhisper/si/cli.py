@@ -34,7 +34,11 @@ from .pipeline import STEPS, STEP_BY_NAME, STEP_BY_NUM, STEP_NAMES, resolve_step
 
 DEFAULT_RUNS = Path.home() / ".local" / "share" / "voicememowhisper" / "speaker-id" / "runs"
 DEFAULT_OUTPUT = Path.home() / ".local" / "share" / "voicememowhisper" / "speaker-id" / "outputs"
-DEFAULT_LIBRARY = Path.home() / ".local" / "share" / "voicememowhisper" / "speaker-library"
+# Speaker library lives with the other durable assets (Audio/ / Transcripts/)
+# so a single backup of ~/Documents/VoiceMemoWhisper/ covers everything that
+# can't be regenerated. runs/outputs stay under ~/.local/share/ — they're
+# cache: rebuildable from speaker-library + the source audio.
+DEFAULT_LIBRARY = Path.home() / "Documents" / "VoiceMemoWhisper" / "speaker-library"
 
 
 def _step_help(num: int) -> str:

@@ -150,9 +150,16 @@ class Settings:
     speaker_pipeline_enabled: bool = os.environ.get("VOICE_MEMO_SPEAKER_PIPELINE", "1") == "1"
     speaker_pipeline_model: str = os.environ.get("VOICE_MEMO_SPEAKER_PIPELINE_MODEL", "medium")
     speaker_pipeline_threshold: float = float(os.environ.get("VOICE_MEMO_SPEAKER_PIPELINE_THRESHOLD", "0.5"))
+    # Speaker library lives alongside Audio/ and Transcripts/ under
+    # ~/Documents/VoiceMemoWhisper/ — it's the only durable, hand-curated
+    # data in the pipeline (enrollment clips + profiles with evidence
+    # chains), so it belongs with the other long-term assets and rides
+    # whatever user-level backup already covers ~/Documents/. Stage
+    # intermediates and render outputs stay under ~/.local/share/ since
+    # they are cache (rebuildable from library + audio).
     speaker_library_dir: Path = _env_path(
         "VOICE_MEMO_SPEAKER_LIBRARY_DIR",
-        Path.home() / ".local" / "share" / "voicememowhisper" / "speaker-library",
+        Path.home() / "Documents" / "VoiceMemoWhisper" / "speaker-library",
     )
     speaker_runs_dir: Path = _env_path(
         "VOICE_MEMO_SPEAKER_RUNS_DIR",

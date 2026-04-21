@@ -430,6 +430,33 @@ def test_render_copy_uses_audio_stem_not_recording_id(tmp_path, capsys, monkeypa
     assert (output / cache_rid / "transcript.md").exists()
 
 
+def test_default_library_lives_under_documents_not_local_share():
+    """Regression guard for the 2026-04-21 relocation: speaker library
+    belongs next to Audio/ and Transcripts/ under ~/Documents/, so a
+    single backup of that folder covers every hand-curated asset. The
+    runs/ and outputs/ caches stay under ~/.local/share/ (rebuildable).
+    """
+    from voicememowhisper.si.cli import DEFAULT_LIBRARY, DEFAULT_RUNS, DEFAULT_OUTPUT
+    from voicememowhisper.config import Settings
+
+    expected_lib = Path.home() / "Documents" / "VoiceMemoWhisper" / "speaker-library"
+    expected_runs = Path.home() / ".local" / "share" / "voicememowhisper" / "speaker-id" / "runs"
+    expected_output = Path.home() / ".local" / "share" / "voicememowhisper" / "speaker-id" / "outputs"
+
+    assert DEFAULT_LIBRARY == expected_lib
+    assert DEFAULT_RUNS == expected_runs
+    assert DEFAULT_OUTPUT == expected_output
+
+    # Settings must match — these are the defaults the watcher's
+    # SpeakerPipeline reads. If these diverge from cli.py's defaults,
+    # `voicememo-whisper` and `voicememo-whisper si` disagree about
+    # where the library lives.
+    s = Settings()
+    assert s.speaker_library_dir == expected_lib
+    assert s.speaker_runs_dir == expected_runs
+    assert s.speaker_output_dir == expected_output
+
+
 def test_inspect_uses_recording_id_override(tmp_path, capsys):
     """When audio stem != cache dir (e.g. after archive rename), an
     explicit --recording-id should point `inspect` at the right cache."""
