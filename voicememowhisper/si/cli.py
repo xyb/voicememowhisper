@@ -65,6 +65,7 @@ def _cmd_single_step(step_num: int, args: argparse.Namespace) -> int:
         from_step=step_num,
         to_step=step_num,
         force=True,
+        recording_id=getattr(args, "recording_id", None),
     )
     return 0
 
@@ -86,6 +87,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         from_step=args.from_step,
         to_step=args.to_step,
         force=args.force,
+        recording_id=args.recording_id,
     )
     return 0
 
@@ -106,7 +108,7 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     audio = _resolve_audio(args)
     runs = _path_or_default(args.runs, DEFAULT_RUNS)
     output = _path_or_default(args.output, DEFAULT_OUTPUT)
-    rid = audio.stem
+    rid = getattr(args, "recording_id", None) or audio.stem
     run_dir = runs / rid
     out_dir = output / rid
 
@@ -186,6 +188,31 @@ def _cmd_library(args: argparse.Namespace) -> int:
         target = clips_dir / f"{next_num:03d}{clip.suffix.lower()}"
         shutil.copy2(clip, target)
         print(f"copied {clip} → {target}")
+
+        # Populate profile.json with the human-readable display_name up front
+        # when the speaker dir is new, so xyb doesn't have to hand-edit the
+        # JSON every time. Skipped if profile.json already exists (preserves
+        # prior manual edits on re-enrollment of an existing speaker).
+        display_name = getattr(args, "display_name", None)
+        aliases = getattr(args, "alias", None) or []
+        notes = getattr(args, "notes", None)
+        profile_path = library / speaker / "profile.json"
+        if not profile_path.exists() and (display_name or aliases or notes):
+            import json as _json
+            profile_path.write_text(
+                _json.dumps(
+                    {
+                        "speaker_id": speaker,
+                        "display_name": display_name or speaker,
+                        "aliases": aliases,
+                        "notes": notes or "",
+                    },
+                    ensure_ascii=False, indent=2,
+                ) + "\n",
+                encoding="utf-8",
+            )
+            print(f"wrote {profile_path}")
+
         if not args.no_rebuild:
             return _rebuild_speaker(library, speaker)
         print("(skipping embedding rebuild; rerun with `library rebuild` to update)")
@@ -194,6 +221,102 @@ def _cmd_library(args: argparse.Namespace) -> int:
     if args.lib_action == "rebuild":
         return _rebuild_speaker(library, args.speaker)
 
+    if args.lib_action == "score":
+        return _cmd_library_score(args, library)
+
+    return 0
+
+
+def _cmd_library_score(args: argparse.Namespace, library: Path) -> int:
+    """Cosine cross-match: every SPEAKER centroid (from a cached diarize
+    run) vs every library centroid. Pure numpy — no ML deps reload, so
+    it's safe to run while another pyannote pipeline is going."""
+    import json as _json
+    import numpy as np  # part of [speaker-id] extra; required for this cmd
+
+    # Resolve recording_id: explicit → audio stem → most recently-modified
+    # runs subdir. Lets xyb run `si library score --recording-id X` after
+    # archiving an audio without needing the original path back.
+    runs_dir = _path_or_default(getattr(args, "runs", None), DEFAULT_RUNS)
+    rid = getattr(args, "recording_id", None)
+    if not rid and getattr(args, "audio", None):
+        rid = Path(args.audio).expanduser().stem
+    if not rid:
+        # Fall back to most-recently-used cache dir.
+        candidates = sorted(
+            (d for d in runs_dir.iterdir() if d.is_dir()),
+            key=lambda d: d.stat().st_mtime,
+            reverse=True,
+        ) if runs_dir.exists() else []
+        if not candidates:
+            print(f"no cached runs under {runs_dir}", file=sys.stderr)
+            return 2
+        rid = candidates[0].name
+        print(f"(no --recording-id / --audio given; using most recent cache: {rid})")
+
+    emb_path = runs_dir / rid / "diarization_pyannote.embeddings.npz"
+    if not emb_path.exists():
+        print(f"embeddings cache missing: {emb_path}", file=sys.stderr)
+        print(f"run stage 2 (diarize) on this recording first.", file=sys.stderr)
+        return 2
+
+    if not library.exists():
+        print(f"library does not exist: {library}", file=sys.stderr)
+        return 2
+
+    npz = np.load(emb_path)
+    speakers = sorted(npz.files)
+
+    # Gather library centroids + display names.
+    lib = {}
+    for d in sorted(library.iterdir()):
+        if not d.is_dir():
+            continue
+        emb = d / "embedding.npy"
+        if not emb.exists():
+            continue
+        prof = d / "profile.json"
+        name = d.name
+        if prof.exists():
+            try:
+                name = _json.loads(prof.read_text(encoding="utf-8")).get("display_name", d.name)
+            except Exception:
+                pass
+        lib[d.name] = (name, np.load(emb))
+
+    if not lib:
+        print(f"library has no enrolled embeddings: {library}", file=sys.stderr)
+        return 2
+
+    def _cos(a, b):
+        return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-9))
+
+    threshold = float(getattr(args, "threshold", 0.5))
+    print(f"recording: {rid}")
+    print(f"library:   {library}  ({len(lib)} speakers)")
+    print(f"threshold: {threshold}")
+    print()
+    print(f"{'SPEAKER':<11} {'best':<18} {'cos':>7}  {'2nd':<18} {'cos':>7}  {'margin':>7}  flag")
+    print("-" * 86)
+    for s in speakers:
+        vec = npz[s]
+        scores = sorted(
+            [(_cos(vec, v), sid, name) for sid, (name, v) in lib.items()],
+            reverse=True,
+        )
+        best = scores[0]
+        snd = scores[1] if len(scores) > 1 else (0.0, "", "—")
+        margin = best[0] - snd[0]
+        flags = []
+        if best[0] < threshold:
+            flags.append("UNMATCHED")
+        elif margin < 0.1:
+            flags.append("AMBIGUOUS")
+        print(
+            f"{s:<11} {best[2]:<18} {best[0]:>7.4f}  "
+            f"{snd[2]:<18} {snd[0]:>7.4f}  {margin:>7.4f}  "
+            f"{' '.join(flags)}"
+        )
     return 0
 
 
@@ -235,6 +358,10 @@ def _add_common_audio_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--library", help=f"Speaker library directory (default: {DEFAULT_LIBRARY})")
     p.add_argument("--output-transcript",
                    help="Copy final transcript.md/.txt to this directory (e.g. ~/Documents/VoiceMemoWhisper/Transcripts)")
+    p.add_argument("--recording-id", dest="recording_id", default=None,
+                   help="Override cache-dir key (default: audio.stem). Use when the "
+                        "audio has been archived/renamed but the original runs/<id>/ "
+                        "cache still exists.")
 
 
 def _add_stage_specific_args(name: str, p: argparse.ArgumentParser) -> None:
@@ -307,10 +434,37 @@ def build_parser() -> argparse.ArgumentParser:
     sla = lsub.add_parser("add", help="Add a clip to a speaker, then rebuild that speaker's embedding")
     sla.add_argument("speaker", help="Speaker id (directory name under the library)")
     sla.add_argument("clip", help="Path to a .wav (or .m4a) clip to enroll")
+    sla.add_argument("--display-name", dest="display_name",
+                     help="Human-readable name written into profile.json (e.g. '徐子悠'). "
+                          "Only applied on first enrollment — existing profile.json is preserved.")
+    sla.add_argument("--alias", action="append", default=None,
+                     help="Alias for the speaker; repeat to add multiple (e.g. --alias 'Ziyou Xu' --alias ziyou).")
+    sla.add_argument("--notes", default=None,
+                     help="Notes written into profile.json on first enrollment "
+                          "(evidence chain, clip sources, etc).")
     sla.add_argument("--no-rebuild", action="store_true",
                      help="Don't rebuild the embedding after copying")
     slr = lsub.add_parser("rebuild", help="Recompute centroid embeddings")
     slr.add_argument("--speaker", help="Restrict to a single speaker id (default: all speakers)")
+    # `score` — cross-match a cached recording's speakers against the library.
+    # Pure numpy (reads cached .npz), so safe to run in parallel with a live
+    # pyannote pipeline and fast enough for interactive iteration.
+    sls = lsub.add_parser(
+        "score",
+        help="Show cosine match table for a cached recording's SPEAKERs against the library",
+        description="Reads the cached diarize-stage embeddings and prints a per-speaker "
+                    "best/2nd/margin cosine table against the current library. Flags rows "
+                    "below threshold as UNMATCHED and rows with margin<0.1 as AMBIGUOUS.",
+    )
+    sls.add_argument("--audio",
+                     help="Audio path — uses its stem as recording_id by default.")
+    sls.add_argument("--recording-id", dest="recording_id",
+                     help="Recording id (runs/<id>/ subdir name). If neither --audio "
+                          "nor --recording-id is given, picks the most recently-updated "
+                          "runs/ subdir.")
+    sls.add_argument("--runs", help=f"Runs directory (default: {DEFAULT_RUNS})")
+    sls.add_argument("--threshold", type=float, default=0.5,
+                     help="Cosine threshold for UNMATCHED flag (default: 0.5).")
     sl.set_defaults(_handler=_cmd_library)
 
     # `inspect`.

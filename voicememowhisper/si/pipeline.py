@@ -97,10 +97,17 @@ def run(
     from_step: int | str = 1,
     to_step: int | str = 5,
     force: bool = False,
+    recording_id: str | None = None,
 ) -> Path | None:
     """Run the speaker-id pipeline.
 
     Returns the path to transcript.md if stage 5 ran, else None.
+
+    ``recording_id`` overrides the default (``audio_path.stem``) used to
+    locate ``runs/<id>/`` cache. Useful when the audio has been archived
+    and its filename no longer matches the cache directory — pass the
+    original stem so late stages (identify / merge / render) can still
+    consume the cached transcript / diarization / embeddings.
     """
     from_n = resolve_step(from_step)
     to_n = resolve_step(to_step)
@@ -123,7 +130,8 @@ def run(
         output_dir = _SCRIPT_DIR / "outputs"
 
     audio_path = Path(audio_path).resolve()
-    recording_id = audio_path.stem
+    if recording_id is None:
+        recording_id = audio_path.stem
     run_dir = runs_dir / recording_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -328,10 +336,18 @@ def run(
         txt_path.write_text(txt_content, encoding="utf-8")
 
         if output_transcript_dir:
+            # Decouple the user-facing copy name from the cache key. For
+            # fresh runs they match (audio.stem == recording_id). For
+            # re-runs against an archived file via --recording-id, the
+            # cache key stays put but the copy uses the audio's current
+            # stem — which is the canonical vault filename in practice.
+            # This avoids the manual `mv <cache-key>.md <canonical>.md`
+            # step after every --recording-id re-render.
             output_transcript_dir = Path(output_transcript_dir)
             output_transcript_dir.mkdir(parents=True, exist_ok=True)
-            target_md = output_transcript_dir / f"{recording_id}.md"
-            target_txt = output_transcript_dir / f"{recording_id}.txt"
+            copy_stem = audio_path.stem
+            target_md = output_transcript_dir / f"{copy_stem}.md"
+            target_txt = output_transcript_dir / f"{copy_stem}.txt"
             shutil.copy2(md_path, target_md)
             shutil.copy2(txt_path, target_txt)
             print(f"[pipeline] copied → {target_md}")
@@ -400,6 +416,10 @@ def main() -> int:
                     help=f"Stop after this step (name or 1-{len(STEPS)}). Default: {len(STEPS)}.")
     ap.add_argument("--force", action="store_true",
                     help="Re-run in-window steps even if cached output exists.")
+    ap.add_argument("--recording-id", default=None,
+                    help="Override the cache-dir key (default: audio.stem). "
+                         "Use when the audio has been archived/renamed but you "
+                         "want to reuse the original runs/<id>/ cache.")
     args = ap.parse_args()
 
     if not args.audio.exists():
@@ -421,6 +441,7 @@ def main() -> int:
             from_step=args.from_step,
             to_step=args.to_step,
             force=args.force,
+            recording_id=args.recording_id,
         )
     except KeyboardInterrupt:
         print("\n[pipeline] interrupted", file=sys.stderr)
