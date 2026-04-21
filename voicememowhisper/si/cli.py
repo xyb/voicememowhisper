@@ -50,6 +50,32 @@ def _step_help(num: int) -> str:
 # ───────── Subcommand handlers ────────────────────────────────────────
 
 
+def _build_asr_backend_kwargs(args: argparse.Namespace) -> dict:
+    """Turn the --asr-* CLI flags into kwargs for pipeline.run.
+
+    Returns a dict with ``asr_backend`` and optionally ``asr_backend_config``.
+    Default backend is ``faster_whisper`` — ``asr_backend_config`` is only
+    populated when the user actually asks for an HTTP backend.
+    """
+    backend = getattr(args, "asr_backend", None) or "faster_whisper"
+    kwargs: dict = {"asr_backend": backend}
+    if backend in ("openai-audio", "openai_audio"):
+        cfg: dict = {}
+        for flag, key in (
+            ("asr_url", "url"),
+            ("asr_model", "model"),
+            ("asr_api_key", "api_key"),
+            ("asr_host_header", "host_header"),
+            ("asr_response_format", "response_format"),
+            ("asr_timeout_sec", "timeout_sec"),
+        ):
+            val = getattr(args, flag, None)
+            if val is not None:
+                cfg[key] = val
+        kwargs["asr_backend_config"] = cfg
+    return kwargs
+
+
 def _cmd_single_step(step_num: int, args: argparse.Namespace) -> int:
     """Run exactly one stage. Always forces re-run (single-step is the
     explicit way to redo a stage; use `run` to leverage caching)."""
@@ -70,6 +96,7 @@ def _cmd_single_step(step_num: int, args: argparse.Namespace) -> int:
         to_step=step_num,
         force=True,
         recording_id=getattr(args, "recording_id", None),
+        **_build_asr_backend_kwargs(args),
     )
     return 0
 
@@ -92,6 +119,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         to_step=args.to_step,
         force=args.force,
         recording_id=args.recording_id,
+        **_build_asr_backend_kwargs(args),
     )
     return 0
 
@@ -368,6 +396,39 @@ def _add_common_audio_args(p: argparse.ArgumentParser) -> None:
                         "cache still exists.")
 
 
+def _add_asr_backend_args(p: argparse.ArgumentParser) -> None:
+    """Flags that select + configure the stage-1 ASR backend.
+
+    Added to both `run` and the `transcribe` single-step subcommand so
+    either entry point can switch backends. Defaults preserve the
+    existing behaviour (``faster_whisper``) — passing nothing changes
+    nothing.
+    """
+    p.add_argument(
+        "--asr-backend", dest="asr_backend", default="faster_whisper",
+        choices=["faster_whisper", "openai-audio"],
+        help="Stage-1 transcription backend (default: faster_whisper). "
+             "'openai-audio' routes to any OpenAI Audio API compatible "
+             "server (OpenAI Whisper, a self-hosted FunASR slim, "
+             "groq, ...) — see --asr-url / --asr-model.",
+    )
+    p.add_argument("--asr-url", dest="asr_url", default=None,
+                   help="openai-audio endpoint URL "
+                        "(e.g. http://asr.internal:8000/v1/audio/transcriptions)")
+    p.add_argument("--asr-model", dest="asr_model", default=None,
+                   help="Model name the openai-audio server accepts "
+                        "(e.g. paraformer-large, whisper-1, sensevoice-small)")
+    p.add_argument("--asr-api-key", dest="asr_api_key", default=None,
+                   help="Bearer token for openai-audio (omit for no-auth self-hosted)")
+    p.add_argument("--asr-host-header", dest="asr_host_header", default=None,
+                   help="Host header override (e.g. 'asr.internal' when routing via a reverse proxy)")
+    p.add_argument("--asr-response-format", dest="asr_response_format", default=None,
+                   choices=["json", "verbose_json", "text", "srt", "vtt"],
+                   help="openai-audio response format (default: verbose_json)")
+    p.add_argument("--asr-timeout-sec", dest="asr_timeout_sec", type=float, default=None,
+                   help="openai-audio per-request timeout in seconds (default: 600)")
+
+
 def _add_stage_specific_args(name: str, p: argparse.ArgumentParser) -> None:
     if name == "transcribe":
         p.add_argument("--model", default="medium",
@@ -376,6 +437,7 @@ def _add_stage_specific_args(name: str, p: argparse.ArgumentParser) -> None:
                        help="Language hint, or 'auto' (default: zh)")
         p.add_argument("--compute-type", default="int8",
                        help="int8 / int8_float16 / float16 / float32 (default: int8)")
+        _add_asr_backend_args(p)
     if name == "identify":
         p.add_argument("--threshold", type=float, default=0.5,
                        help="Cosine match threshold (default: 0.5)")
@@ -427,6 +489,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Re-run in-window steps even if cached output exists.")
     sr.add_argument("--skip-identify", action="store_true",
                     help="Skip the identify stage (treats it as no-op)")
+    _add_asr_backend_args(sr)
     sr.set_defaults(_handler=_cmd_run)
 
     # `library`.

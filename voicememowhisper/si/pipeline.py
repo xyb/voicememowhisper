@@ -98,6 +98,8 @@ def run(
     to_step: int | str = 5,
     force: bool = False,
     recording_id: str | None = None,
+    asr_backend: str = "faster_whisper",
+    asr_backend_config: dict | None = None,
 ) -> Path | None:
     """Run the speaker-id pipeline.
 
@@ -108,6 +110,18 @@ def run(
     and its filename no longer matches the cache directory — pass the
     original stem so late stages (identify / merge / render) can still
     consume the cached transcript / diarization / embeddings.
+
+    ``asr_backend`` picks the transcription engine for stage 1:
+
+    - ``"faster_whisper"`` (default): in-process Python, uses ``model`` /
+      ``compute_type`` args. Cache file: ``transcript_faster_whisper.json``.
+    - ``"openai-audio"``: HTTP call to any OpenAI Audio API compatible
+      server (OpenAI Whisper, a self-hosted FunASR slim, groq, ...).
+      Requires ``asr_backend_config`` with at least ``url`` and ``model``;
+      optional ``api_key`` / ``host_header`` / ``language`` /
+      ``response_format`` / ``timeout_sec``. Cache file:
+      ``transcript_openai_audio.json``. The ``model`` / ``compute_type``
+      args above are ignored for this backend.
     """
     from_n = resolve_step(from_step)
     to_n = resolve_step(to_step)
@@ -135,7 +149,12 @@ def run(
     run_dir = runs_dir / recording_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    transcript_path = run_dir / "transcript_faster_whisper.json"
+    # Cache file name is keyed by backend so different engines' outputs
+    # can coexist under runs/<id>/ without clobbering each other. Hyphens
+    # in backend ids ("openai-audio") become underscores so the filename
+    # stays shell-friendly.
+    _backend_fname = asr_backend.replace("-", "_")
+    transcript_path = run_dir / f"transcript_{_backend_fname}.json"
     diarization_path = run_dir / "diarization_pyannote.json"
     embeddings_path = run_dir / "diarization_pyannote.embeddings.npz"
     identification_path = run_dir / "identification.json"
@@ -145,7 +164,13 @@ def run(
     print("=" * 60)
     print(f"[pipeline] recording: {recording_id}")
     print(f"[pipeline] audio:     {audio_path}")
-    print(f"[pipeline] model:     {model} (compute_type={compute_type})")
+    if asr_backend == "faster_whisper":
+        print(f"[pipeline] asr:       faster_whisper / {model} (compute_type={compute_type})")
+    else:
+        cfg = asr_backend_config or {}
+        cfg_model = cfg.get("model", "?")
+        cfg_url = cfg.get("url", "?")
+        print(f"[pipeline] asr:       {asr_backend} / {cfg_model} @ {cfg_url}")
     print(f"[pipeline] library:   {library_dir}")
     print(f"[pipeline] steps:     {from_n} ({STEP_BY_NUM[from_n]}) → "
           f"{to_n} ({STEP_BY_NUM[to_n]}){'  [force]' if force else ''}")
@@ -167,7 +192,7 @@ def run(
         if transcript_path.exists():
             print(f"{_stage_header(1,'transcribe')} cached → {transcript_path}")
             transcript_obj = contracts.Transcript.from_json(transcript_path)
-        else:
+        elif asr_backend == "faster_whisper":
             # ffprobe duration lets StageProgress render a real ETA bar.
             # If ffprobe is missing or fails, total=None degrades to an
             # indeterminate spinner; the model's own info.duration is
@@ -192,6 +217,36 @@ def run(
                     f"{len(transcript_obj.segments)} segments, "
                     f"{_peak_rss_mb():.1f} MB RSS"
                 )
+        elif asr_backend in ("openai-audio", "openai_audio"):
+            # HTTP backend. Progress bar stays indeterminate because the
+            # server doesn't stream partial segments back — we just send
+            # the audio, wait, get the full result.
+            from .asr_backends import openai_audio as mod_openai_audio
+
+            cfg_dict = dict(asr_backend_config or {})
+            if "url" not in cfg_dict or "model" not in cfg_dict:
+                raise ValueError(
+                    "asr_backend='openai-audio' requires asr_backend_config "
+                    "with at least 'url' and 'model'"
+                )
+            # Per-backend language default: config override > pipeline-level language.
+            cfg_dict.setdefault("language", language)
+            cfg = mod_openai_audio.OpenAIAudioConfig(**cfg_dict)
+            with StageProgress(
+                "transcribe", stage_num=1, total_stages=len(STEPS),
+            ) as prog:
+                prog.note(f"backend=openai-audio model={cfg.model} url={cfg.url}")
+                transcript_obj, raw_info = mod_openai_audio.transcribe(
+                    audio_path, cfg
+                )
+                transcript_obj.to_json(transcript_path)
+                prog.note(
+                    f"{len(transcript_obj.segments)} segments in "
+                    f"{raw_info['wall_clock_sec']}s, "
+                    f"{_peak_rss_mb():.1f} MB RSS"
+                )
+        else:
+            raise ValueError(f"unknown asr_backend: {asr_backend!r}")
         print()
     elif 2 <= to_n:
         # Need transcript downstream — load cached.
