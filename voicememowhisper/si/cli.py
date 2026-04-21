@@ -51,17 +51,43 @@ def _step_help(num: int) -> str:
 
 
 def _build_asr_backend_kwargs(args: argparse.Namespace) -> dict:
-    """Turn the --asr-* CLI flags into kwargs for pipeline.run.
+    """Turn the --asr-* CLI flags (plus an optional TOML config file)
+    into kwargs for pipeline.run.
 
-    Returns a dict with ``asr_backend`` and optionally ``asr_backend_config``.
-    Default backend is ``faster_whisper`` — ``asr_backend_config`` is only
-    populated when the user actually asks for an HTTP backend.
+    Precedence: CLI flags > config file > built-in defaults. A CLI
+    flag that the user didn't pass stays ``None`` and doesn't override
+    the config.
+
+    Returns a dict with ``asr_backend`` and optionally
+    ``asr_backend_config``. Default backend is ``faster_whisper`` —
+    ``asr_backend_config`` is only populated when the effective backend
+    is an HTTP one.
     """
-    backend = getattr(args, "asr_backend", None) or "faster_whisper"
+    from .asr_config import load_asr_config
+
+    # Base layer: config file (may be empty).
+    merged: dict = load_asr_config(getattr(args, "asr_config", None))
+
+    # Overlay: every --asr-* flag the user actually passed.
+    for flag in (
+        "asr_backend",
+        "asr_url",
+        "asr_model",
+        "asr_api_key",
+        "asr_host_header",
+        "asr_response_format",
+        "asr_timeout_sec",
+    ):
+        val = getattr(args, flag, None)
+        if val is not None:
+            merged[flag] = val
+
+    backend = merged.get("asr_backend") or "faster_whisper"
     kwargs: dict = {"asr_backend": backend}
+
     if backend in ("openai-audio", "openai_audio"):
         cfg: dict = {}
-        for flag, key in (
+        for merged_key, http_key in (
             ("asr_url", "url"),
             ("asr_model", "model"),
             ("asr_api_key", "api_key"),
@@ -69,9 +95,8 @@ def _build_asr_backend_kwargs(args: argparse.Namespace) -> dict:
             ("asr_response_format", "response_format"),
             ("asr_timeout_sec", "timeout_sec"),
         ):
-            val = getattr(args, flag, None)
-            if val is not None:
-                cfg[key] = val
+            if merged_key in merged:
+                cfg[http_key] = merged[merged_key]
         kwargs["asr_backend_config"] = cfg
     return kwargs
 
@@ -405,13 +430,20 @@ def _add_asr_backend_args(p: argparse.ArgumentParser) -> None:
     nothing.
     """
     p.add_argument(
-        "--asr-backend", dest="asr_backend", default="faster_whisper",
+        "--asr-backend", dest="asr_backend", default=None,
         choices=["faster_whisper", "openai-audio"],
-        help="Stage-1 transcription backend (default: faster_whisper). "
-             "'openai-audio' routes to any OpenAI Audio API compatible "
-             "server (OpenAI Whisper, a self-hosted FunASR slim, "
-             "groq, ...) — see --asr-url / --asr-model.",
+        help="Stage-1 transcription backend. 'openai-audio' routes to "
+             "any OpenAI Audio API compatible server (OpenAI Whisper, "
+             "a self-hosted FunASR slim, groq, ...) — see --asr-url / "
+             "--asr-model. Reads from ~/.config/voicememowhisper/config.toml "
+             "if present; falls back to 'faster_whisper' if neither flag "
+             "nor config sets it.",
     )
+    p.add_argument("--asr-config", dest="asr_config", default=None,
+                   help="Path to a TOML config file with ASR backend settings. "
+                        "Default search: $VMW_CONFIG, "
+                        "~/.config/voicememowhisper/config.toml, "
+                        "~/.voicememowhisper.toml. See docs/asr-backends.md.")
     p.add_argument("--asr-url", dest="asr_url", default=None,
                    help="openai-audio endpoint URL "
                         "(e.g. http://asr.internal:8000/v1/audio/transcriptions)")

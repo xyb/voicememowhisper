@@ -87,7 +87,47 @@ python -m voicememowhisper.si.asr_backends.openai_audio \
 Useful for ad-hoc cross-checking a known-problem segment against a
 different model without touching pipeline state.
 
-### Using it via the pipeline CLI
+### Via a config file (recommended for daily use)
+
+Writing `--asr-url / --asr-model / --asr-host-header ...` every time
+gets tedious. Put the defaults in a TOML file and the CLI picks them
+up automatically:
+
+```toml
+# ~/.config/voicememowhisper/config.toml
+[asr]
+backend = "openai-audio"
+language = "zh"
+
+[asr.http]
+url = "http://asr.internal:8000/v1/audio/transcriptions"
+model = "paraformer-large"
+host_header = "asr.internal"
+# api_key = "sk-..."           # optional
+# response_format = "verbose_json"
+# timeout_sec = 600
+```
+
+With the file in place, just run:
+
+```sh
+voicememo-whisper si run /path/to/meeting.m4a
+```
+
+Search order for the config file:
+
+1. `--asr-config <path>` on the CLI
+2. `$VMW_CONFIG` environment variable
+3. `~/.config/voicememowhisper/config.toml`
+4. `~/.voicememowhisper.toml`
+
+First hit wins. No file found → falls back to the built-in default
+(`faster_whisper`), so existing users see no change.
+
+Precedence: CLI flags > config file > defaults. Pass `--asr-model
+other-model` once to override the config for a single run.
+
+### Via CLI flags (ad-hoc override)
 
 ```sh
 voicememo-whisper si run /path/to/meeting.m4a \

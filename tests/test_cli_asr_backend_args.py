@@ -13,10 +13,22 @@ import pytest
 from voicememowhisper.si.cli import _build_asr_backend_kwargs
 
 
+@pytest.fixture(autouse=True)
+def _isolate_config(monkeypatch, tmp_path):
+    """Make sure these tests never pick up a real config file on the
+    developer's machine — the file-loading branch is covered separately
+    in test_asr_config.py."""
+    monkeypatch.delenv("VMW_CONFIG", raising=False)
+    from pathlib import Path
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+
 def _ns(**kw) -> argparse.Namespace:
     """Build a Namespace with every --asr-* flag defaulted to None."""
     defaults = dict(
         asr_backend=None,
+        asr_config=None,
         asr_url=None,
         asr_model=None,
         asr_api_key=None,
