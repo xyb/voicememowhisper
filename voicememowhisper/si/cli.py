@@ -120,6 +120,43 @@ def _cmd_single_step(step_num: int, args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_viewer(args: argparse.Namespace) -> int:
+    """Build an interactive word-aligned viewer for the given audio."""
+    import subprocess
+    from .viewer import build_viewer, default_viewers_root
+
+    audio = Path(args.audio).expanduser().resolve()
+    if not audio.exists():
+        print(f"audio file not found: {audio}", file=sys.stderr)
+        return 2
+
+    if args.out_dir:
+        out_dir = Path(args.out_dir).expanduser().resolve()
+    else:
+        out_dir = default_viewers_root() / audio.stem
+
+    try:
+        index_html = build_viewer(
+            audio,
+            out_dir,
+            model_name=args.model,
+            language=args.language,
+            force=args.force,
+        )
+    except Exception as err:
+        print(f"viewer: {err}", file=sys.stderr)
+        return 1
+
+    print(f"viewer: {index_html}")
+    if not args.no_open:
+        # macOS `open` — harmless on other OS since we're Mac-only in practice.
+        try:
+            subprocess.run(["open", str(index_html)], check=False)
+        except FileNotFoundError:
+            pass
+    return 0
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     audio = _resolve_audio(args)
     from .pipeline import run
@@ -998,6 +1035,33 @@ def build_parser() -> argparse.ArgumentParser:
     sls.add_argument("--threshold", type=float, default=0.5,
                      help="Cosine threshold for UNMATCHED flag (default: 0.5).")
     sl.set_defaults(_handler=_cmd_library)
+
+    # `viewer`.
+    sv = sub.add_parser(
+        "viewer",
+        help="Generate an interactive word-aligned HTML viewer for an audio clip",
+        description="Runs faster-whisper with word-level timestamps on the "
+                    "given audio, renders a waveform + spectrogram PNG with "
+                    "per-word color bands, and emits an HTML page with "
+                    "click-to-seek character labels and a 60fps playback "
+                    "cursor. Built for auditioning speaker-library candidate "
+                    "clips and sanity-checking word-level alignment.",
+    )
+    sv.add_argument("audio", help="Path to audio file")
+    sv.add_argument("--model", default="small",
+                    help="faster-whisper model size "
+                         "(tiny/base/small/medium/large-v3). Default: small.")
+    sv.add_argument("--language", default="zh",
+                    help="ASR language hint. Default: zh.")
+    sv.add_argument("--out-dir", default=None,
+                    help="Where to write the viewer dir. Default: "
+                         "~/.local/share/voicememowhisper/viewers/<audio_stem>/")
+    sv.add_argument("--force", action="store_true",
+                    help="Re-run transcription even if a cached "
+                         "transcript.json exists for this audio.")
+    sv.add_argument("--no-open", action="store_true",
+                    help="Don't auto-open the generated HTML in a browser.")
+    sv.set_defaults(_handler=_cmd_viewer)
 
     # `inspect`.
     si = sub.add_parser("inspect",

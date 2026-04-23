@@ -24,6 +24,9 @@ speaker-id = [
     "torchaudio",
     "soundfile",
     "numpy",
+    # Used by `si viewer`: waveform + spectrogram PNG generation. scipy
+    # is already a transitive dep of pyannote.audio so it's not listed.
+    "matplotlib",
 ]
 
 [project.scripts]
