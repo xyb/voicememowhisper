@@ -127,6 +127,31 @@ class VoiceMemoService:
             except Exception as err:
                 LOGGER.debug("Could not watch Inbox directory (non-fatal): %s", err, extra={"verbosity": 2})
 
+    def process_one(self, path: Path) -> None:
+        """Process a single audio file end-to-end through the same flow
+        the main scan uses (state DB + ArchiveManager + speaker pipeline).
+
+        ``path`` may point at a Voice Memos source file, an Inbox-style
+        file, or an already-archived file. The path is normalized into a
+        :class:`VoiceMemo` via the metadata cache so guid / title /
+        created_at land consistently with the batch flow. The state DB
+        guard inside :meth:`enqueue_path` skips the run if the file has
+        already been transcribed *and* archived; pass a file that needs
+        either step (or both) and it will run.
+        """
+        path = Path(path).expanduser().resolve()
+        if not path.exists():
+            raise FileNotFoundError(f"audio file not found: {path}")
+
+        LOGGER.info("Processing single audio: %s", path, extra={"verbosity": 0})
+        self._log_sources()
+        self._worker_thread = threading.Thread(
+            target=self._worker_loop, name="VoiceMemoWorker", daemon=True
+        )
+        self._worker_thread.start()
+        self._metadata_cache.refresh()
+        self.enqueue_path(path)
+
     def stop(self) -> None:
         LOGGER.info("Stopping Voice Memo transcription service", extra={"verbosity": 1})
         self._stop.set()

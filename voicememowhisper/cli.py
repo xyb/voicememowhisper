@@ -211,6 +211,13 @@ def main(argv: list[str] | None = None) -> int:
         default=0,
         help="Increase verbosity (-v for info, -vv for debug).",
     )
+    parser.add_argument(
+        "audio",
+        nargs="?",
+        help="Optional path to a single audio file to process end-to-end. "
+             "Bypasses the Voice Memos / Inbox / archive scan and runs only "
+             "this file through the same state-DB + archive + speaker-id flow.",
+    )
     parser.add_argument("--watch", action="store_true", help="Keep running and watch for new recordings.")
     parser.add_argument(
         "--model", help="WhisperKit model identifier (default from env or 'large-v3-v20240930_turbo')."
@@ -274,16 +281,25 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
         try:
-            service.start(watch=args.watch)
-            if args.watch:
-                logging.info(
-                    "Backlog synced. Watching for new recordings. Press Ctrl+C to exit.",
-                    extra={"verbosity": 1},
-                )
-                while True:
-                    time.sleep(1)
-            else:
+            if args.audio:
+                # Single-file mode: skip the broad scan, just run this one
+                # through the same state-DB + ArchiveManager + speaker_pipeline
+                # path. This is the canonical way to (re)process one specific
+                # file — `si run` is intentionally the diagnostic-only entry.
+                from pathlib import Path
+                service.process_one(Path(args.audio))
                 service.join()
+            else:
+                service.start(watch=args.watch)
+                if args.watch:
+                    logging.info(
+                        "Backlog synced. Watching for new recordings. Press Ctrl+C to exit.",
+                        extra={"verbosity": 1},
+                    )
+                    while True:
+                        time.sleep(1)
+                else:
+                    service.join()
         except KeyboardInterrupt:
             logging.info("Interrupted by user.", extra={"verbosity": 1})
         finally:

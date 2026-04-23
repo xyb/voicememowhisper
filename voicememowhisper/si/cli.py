@@ -114,8 +114,7 @@ def _cmd_single_step(step_num: int, args: argparse.Namespace) -> int:
         to_step=step_num,
         force=True,
         recording_id=getattr(args, "recording_id", None),
-        archive=not getattr(args, "no_archive", False),
-        archive_dir=_path_or_none(getattr(args, "archive_dir", None)),
+        archive=False,  # archive is owned by the main flow, never by `si`
         **_build_asr_backend_kwargs(args),
     )
     return 0
@@ -125,6 +124,37 @@ def _cmd_run(args: argparse.Namespace) -> int:
     audio = _resolve_audio(args)
     from .pipeline import run
     from .._lock import single_instance_lock
+
+    # `si run` is the diagnostic / re-run entry. End-to-end "first time"
+    # processing of an audio file goes through the main flow
+    # (`voicememowhisper <audio>`), which owns the state DB and the
+    # ArchiveManager. Refuse to run on an audio that the main flow
+    # hasn't seen yet — otherwise the two paths produce inconsistent
+    # state (different archive naming, no state-DB record, etc.).
+    if not getattr(args, "allow_unregistered", False):
+        if not _audio_known_to_main_flow(audio, getattr(args, "recording_id", None)):
+            print(
+                f"si run: audio not registered with the main flow: {audio}",
+                file=sys.stderr,
+            )
+            print(
+                "  This entry is for diagnostic re-runs of already-processed audio.",
+                file=sys.stderr,
+            )
+            print(
+                "  To process a fresh file end-to-end, use:",
+                file=sys.stderr,
+            )
+            print(
+                f"      voicememo-whisper '{audio}'",
+                file=sys.stderr,
+            )
+            print(
+                "  To override and run anyway (advanced), pass --allow-unregistered.",
+                file=sys.stderr,
+            )
+            return 2
+
     # Share the same single-instance lockfile as the main flow so a user
     # can't accidentally run `voicememowhisper` in one terminal and
     # `voicememowhisper si run ...` in another — both would race on the
@@ -145,11 +175,71 @@ def _cmd_run(args: argparse.Namespace) -> int:
             to_step=args.to_step,
             force=args.force,
             recording_id=args.recording_id,
-            archive=not getattr(args, "no_archive", False),
-            archive_dir=_path_or_none(getattr(args, "archive_dir", None)),
+            # Archive is owned by the main-flow ArchiveManager. `si run`
+            # never touches the archive dir.
+            archive=False,
             **_build_asr_backend_kwargs(args),
         )
     return 0
+
+
+def _audio_known_to_main_flow(audio: Path, recording_id: str | None) -> bool:
+    """Return True if the audio (or its corresponding recording_id cache)
+    has been seen by the main flow — i.e. either:
+
+    - the file lives under the configured archive dir (so it must have
+      gone through the main flow's ArchiveManager), OR
+    - there's a state-DB row whose archived_path or guid matches it, OR
+    - a runs/ cache directory matching ``recording_id`` already exists
+      (so it was previously processed under that id, regardless of where
+      the source audio currently lives — covers re-runs against an
+      archived/renamed file).
+    """
+    import sqlite3
+    from ..config import Settings
+
+    audio = audio.resolve()
+
+    # 1. Already in the archive dir → trust the main flow put it there.
+    try:
+        settings = Settings()
+        if settings.archive_dir:
+            archive_dir = settings.archive_dir.resolve()
+            if audio.is_relative_to(archive_dir):
+                return True
+            # 2. State DB has a row for this archived_path.
+            state_db = settings.state_db
+            if state_db and state_db.exists():
+                conn = sqlite3.connect(str(state_db))
+                try:
+                    cur = conn.execute(
+                        "SELECT 1 FROM processed WHERE archived_path = ? LIMIT 1",
+                        (str(audio),),
+                    )
+                    if cur.fetchone():
+                        return True
+                    # 3. State DB has a row whose guid equals the audio stem
+                    #    (Voice Memos source files use their guid as stem).
+                    cur = conn.execute(
+                        "SELECT 1 FROM processed WHERE guid = ? LIMIT 1",
+                        (audio.stem,),
+                    )
+                    if cur.fetchone():
+                        return True
+                finally:
+                    conn.close()
+    except Exception:
+        # Defensive: if we can't tell, fall through and let recording_id
+        # check decide. Better to occasionally miss than to wrongly block.
+        pass
+
+    # 4. A cache dir already exists under the runs/ root for this id.
+    rid = recording_id or audio.stem
+    runs_dir = _path_or_default(None, DEFAULT_RUNS)
+    if (runs_dir / rid).is_dir():
+        return True
+
+    return False
 
 
 def _cmd_steps(_args: argparse.Namespace) -> int:
@@ -795,12 +885,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Re-run in-window steps even if cached output exists.")
     sr.add_argument("--skip-identify", action="store_true",
                     help="Skip the identify stage (treats it as no-op)")
-    sr.add_argument("--no-archive", action="store_true",
-                    help="Don't move source audio to the archive dir after a "
-                         "successful end-to-end run.")
-    sr.add_argument("--archive-dir", default=None,
-                    help="Override archive destination "
-                         "(default: ~/Documents/VoiceMemoWhisper/Audio).")
+    sr.add_argument("--allow-unregistered", action="store_true",
+                    help="Run on an audio file that the main flow hasn't "
+                         "seen yet. Default behaviour is to refuse and point "
+                         "the user at `voicememo-whisper <audio>`. Use this "
+                         "flag only for ad-hoc/development experiments where "
+                         "you don't want a state DB row or archive copy.")
     _add_asr_backend_args(sr)
     _add_diarize_backend_args(sr)
     sr.set_defaults(_handler=_cmd_run)
