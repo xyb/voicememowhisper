@@ -155,3 +155,59 @@ def load_asr_config(explicit: str | Path | None = None) -> dict[str, Any]:
         out[mapped] = v
 
     return out
+
+
+def build_pipeline_kwargs(merged: dict[str, Any]) -> dict[str, Any]:
+    """Translate a merged config dict (CLI-namespace keys) into the
+    kwargs shape ``si.pipeline.run`` expects.
+
+    ``merged`` is expected to already reflect the final precedence
+    (e.g. CLI > config). Only keys that are present are forwarded —
+    so the built-in defaults in ``pipeline.run`` keep applying for
+    anything missing.
+
+    Returns a dict with ``asr_backend`` / ``asr_backend_config`` /
+    ``diarize_backend`` / ``diarize_backend_config`` ready to splat
+    into ``run_pipeline(..., **kwargs)``. Both the CLI entry point
+    and the watcher wrapper (``speaker_pipeline.py``) call this so
+    the two paths pick up identical backend resolution — avoiding
+    the footgun where one goes through the TOML config and the
+    other silently falls back to built-in local defaults.
+    """
+    kwargs: dict[str, Any] = {}
+
+    backend = merged.get("asr_backend") or "faster_whisper"
+    kwargs["asr_backend"] = backend
+    if backend in ("openai-audio", "openai_audio"):
+        cfg: dict[str, Any] = {}
+        for merged_key, http_key in (
+            ("asr_url", "url"),
+            ("asr_model", "model"),
+            ("asr_api_key", "api_key"),
+            ("asr_host_header", "host_header"),
+            ("asr_response_format", "response_format"),
+            ("asr_timeout_sec", "timeout_sec"),
+        ):
+            if merged_key in merged:
+                cfg[http_key] = merged[merged_key]
+        kwargs["asr_backend_config"] = cfg
+
+    d_backend = merged.get("diarize_backend") or "local_pyannote"
+    kwargs["diarize_backend"] = d_backend
+    if d_backend == "http":
+        dcfg: dict[str, Any] = {}
+        for merged_key, http_key in (
+            ("diarize_url", "url"),
+            ("diarize_api_key", "api_key"),
+            ("diarize_host_header", "host_header"),
+            ("diarize_timeout_sec", "timeout_sec"),
+            ("diarize_include_embeddings", "include_embeddings"),
+            ("diarize_num_speakers", "num_speakers"),
+            ("diarize_min_speakers", "min_speakers"),
+            ("diarize_max_speakers", "max_speakers"),
+        ):
+            if merged_key in merged:
+                dcfg[http_key] = merged[merged_key]
+        kwargs["diarize_backend_config"] = dcfg
+
+    return kwargs

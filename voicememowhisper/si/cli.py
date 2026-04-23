@@ -63,12 +63,12 @@ def _build_asr_backend_kwargs(args: argparse.Namespace) -> dict:
     ``asr_backend_config`` is only populated when the effective backend
     is an HTTP one.
     """
-    from .asr_config import load_asr_config
+    from .asr_config import load_asr_config, build_pipeline_kwargs
 
     # Base layer: config file (may be empty).
     merged: dict = load_asr_config(getattr(args, "asr_config", None))
 
-    # Overlay: every --asr-* flag the user actually passed.
+    # Overlay: every --asr-* / --diarize-* flag the user actually passed.
     for flag in (
         "asr_backend",
         "asr_url",
@@ -77,30 +77,6 @@ def _build_asr_backend_kwargs(args: argparse.Namespace) -> dict:
         "asr_host_header",
         "asr_response_format",
         "asr_timeout_sec",
-    ):
-        val = getattr(args, flag, None)
-        if val is not None:
-            merged[flag] = val
-
-    backend = merged.get("asr_backend") or "faster_whisper"
-    kwargs: dict = {"asr_backend": backend}
-
-    if backend in ("openai-audio", "openai_audio"):
-        cfg: dict = {}
-        for merged_key, http_key in (
-            ("asr_url", "url"),
-            ("asr_model", "model"),
-            ("asr_api_key", "api_key"),
-            ("asr_host_header", "host_header"),
-            ("asr_response_format", "response_format"),
-            ("asr_timeout_sec", "timeout_sec"),
-        ):
-            if merged_key in merged:
-                cfg[http_key] = merged[merged_key]
-        kwargs["asr_backend_config"] = cfg
-
-    # Overlay diarize-* flags on top of the config-file values.
-    for flag in (
         "diarize_backend",
         "diarize_url",
         "diarize_api_key",
@@ -115,24 +91,7 @@ def _build_asr_backend_kwargs(args: argparse.Namespace) -> dict:
         if val is not None:
             merged[flag] = val
 
-    d_backend = merged.get("diarize_backend") or "local_pyannote"
-    kwargs["diarize_backend"] = d_backend
-    if d_backend == "http":
-        dcfg: dict = {}
-        for merged_key, http_key in (
-            ("diarize_url", "url"),
-            ("diarize_api_key", "api_key"),
-            ("diarize_host_header", "host_header"),
-            ("diarize_timeout_sec", "timeout_sec"),
-            ("diarize_include_embeddings", "include_embeddings"),
-            ("diarize_num_speakers", "num_speakers"),
-            ("diarize_min_speakers", "min_speakers"),
-            ("diarize_max_speakers", "max_speakers"),
-        ):
-            if merged_key in merged:
-                dcfg[http_key] = merged[merged_key]
-        kwargs["diarize_backend_config"] = dcfg
-    return kwargs
+    return build_pipeline_kwargs(merged)
 
 
 def _cmd_single_step(step_num: int, args: argparse.Namespace) -> int:

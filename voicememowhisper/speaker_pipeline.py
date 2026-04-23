@@ -100,6 +100,15 @@ class SpeakerPipeline:
             LOGGER.info("Speaker pipeline: %s", display, extra={"verbosity": 0})
 
         from .si.pipeline import run as run_pipeline
+        from .si.asr_config import load_asr_config, build_pipeline_kwargs
+
+        # Load the same TOML config the `si run` CLI uses. Without this
+        # the watcher-driven main flow would silently fall back to the
+        # built-in defaults (faster_whisper + local_pyannote) and run
+        # heavy ML locally, bypassing any self-hosted HTTP backends the
+        # user configured. Precedence is TOML only — no CLI overlay
+        # here; if you want per-run overrides, use `si run ... --asr-*`.
+        backend_kwargs = build_pipeline_kwargs(load_asr_config())
 
         t0 = time.monotonic()
         run_pipeline(
@@ -112,6 +121,7 @@ class SpeakerPipeline:
             output_dir=self._output_dir,
             output_transcript_dir=self.settings.transcript_dir,
             recording_id=target_stem,
+            **backend_kwargs,
         )
         elapsed = time.monotonic() - t0
 
