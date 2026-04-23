@@ -121,6 +121,16 @@ class SpeakerPipeline:
             output_dir=self._output_dir,
             output_transcript_dir=self.settings.transcript_dir,
             recording_id=target_stem,
+            # The main-flow caller has its own ArchiveManager that moves
+            # the source file into Audio/ with the canonical
+            # `YYYY-MM-DD_HH-MM-SS_<title>.m4a` name. Letting the pipeline's
+            # own auto-archive run here would race with that: pipeline moves
+            # the source first using audio_path.name (the raw Voice Memos
+            # `YYYYMMDD HHMMSS.m4a`), then the main-flow archive finds the
+            # source missing and fails. The pipeline-side auto-archive
+            # exists specifically for the direct `si run` path where no
+            # other archiver is active.
+            archive=False,
             **backend_kwargs,
         )
         elapsed = time.monotonic() - t0

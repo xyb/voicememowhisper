@@ -262,28 +262,32 @@ def main(argv: list[str] | None = None) -> int:
     if args.list:
         return _list_recordings(settings, limit=args.limit)
 
-    try:
-        from .service import VoiceMemoService
-        service = VoiceMemoService(settings)
-    except Exception as err:
-        LOGGER.error("%s", err)
-        return 1
+    # Long-running processing: guard against a second instance racing on
+    # the same Voice Memos source / state DB / archive dir.
+    from ._lock import single_instance_lock
+    with single_instance_lock():
+        try:
+            from .service import VoiceMemoService
+            service = VoiceMemoService(settings)
+        except Exception as err:
+            LOGGER.error("%s", err)
+            return 1
 
-    try:
-        service.start(watch=args.watch)
-        if args.watch:
-            logging.info(
-                "Backlog synced. Watching for new recordings. Press Ctrl+C to exit.",
-                extra={"verbosity": 1},
-            )
-            while True:
-                time.sleep(1)
-        else:
-            service.join()
-    except KeyboardInterrupt:
-        logging.info("Interrupted by user.", extra={"verbosity": 1})
-    finally:
-        service.stop()
+        try:
+            service.start(watch=args.watch)
+            if args.watch:
+                logging.info(
+                    "Backlog synced. Watching for new recordings. Press Ctrl+C to exit.",
+                    extra={"verbosity": 1},
+                )
+                while True:
+                    time.sleep(1)
+            else:
+                service.join()
+        except KeyboardInterrupt:
+            logging.info("Interrupted by user.", extra={"verbosity": 1})
+        finally:
+            service.stop()
 
     return 0
 

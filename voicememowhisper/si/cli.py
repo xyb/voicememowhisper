@@ -124,25 +124,31 @@ def _cmd_single_step(step_num: int, args: argparse.Namespace) -> int:
 def _cmd_run(args: argparse.Namespace) -> int:
     audio = _resolve_audio(args)
     from .pipeline import run
-    run(
-        audio,
-        model=args.model or "medium",
-        language=args.language or "zh",
-        compute_type=args.compute_type or "int8",
-        library_dir=_path_or_default(args.library, DEFAULT_LIBRARY),
-        threshold=args.threshold,
-        runs_dir=_path_or_default(args.runs, DEFAULT_RUNS),
-        output_dir=_path_or_default(args.output, DEFAULT_OUTPUT),
-        output_transcript_dir=_path_or_none(args.output_transcript),
-        skip_identify=args.skip_identify,
-        from_step=args.from_step,
-        to_step=args.to_step,
-        force=args.force,
-        recording_id=args.recording_id,
-        archive=not getattr(args, "no_archive", False),
-        archive_dir=_path_or_none(getattr(args, "archive_dir", None)),
-        **_build_asr_backend_kwargs(args),
-    )
+    from .._lock import single_instance_lock
+    # Share the same single-instance lockfile as the main flow so a user
+    # can't accidentally run `voicememowhisper` in one terminal and
+    # `voicememowhisper si run ...` in another — both would race on the
+    # same state DB / archive / outputs dirs.
+    with single_instance_lock():
+        run(
+            audio,
+            model=args.model or "medium",
+            language=args.language or "zh",
+            compute_type=args.compute_type or "int8",
+            library_dir=_path_or_default(args.library, DEFAULT_LIBRARY),
+            threshold=args.threshold,
+            runs_dir=_path_or_default(args.runs, DEFAULT_RUNS),
+            output_dir=_path_or_default(args.output, DEFAULT_OUTPUT),
+            output_transcript_dir=_path_or_none(args.output_transcript),
+            skip_identify=args.skip_identify,
+            from_step=args.from_step,
+            to_step=args.to_step,
+            force=args.force,
+            recording_id=args.recording_id,
+            archive=not getattr(args, "no_archive", False),
+            archive_dir=_path_or_none(getattr(args, "archive_dir", None)),
+            **_build_asr_backend_kwargs(args),
+        )
     return 0
 
 
