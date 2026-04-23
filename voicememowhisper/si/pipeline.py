@@ -507,16 +507,16 @@ def _require_cache(path: Path, step_num: int) -> None:
 
 
 def _render_plain_text(merged: contracts.MergedTranscript) -> str:
-    """Render a plain-text version (speaker labels + text, no timestamps)."""
+    """Render a plain-text version (timestamp + speaker name + text)."""
     from . import render as mod_render
     groups = mod_render.group_consecutive(merged.segments)
     lines: list[str] = []
     for group in groups:
-        label = group[0].speaker_label
-        name = next((s.speaker_name for s in group if s.speaker_name), None) or label
+        name = next((s.speaker_name for s in group if s.speaker_name), None) or group[0].speaker_label
+        ts = mod_render.fmt_timestamp(group[0].start, merged.duration_sec)
         texts = [s.text.strip() for s in group if s.text.strip()]
         body = "".join(texts) if any("。" in t or "," in t for t in texts) else " ".join(texts)
-        lines.append(f"[{name}] {body}")
+        lines.append(f"[{ts} {name}] {body}")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
