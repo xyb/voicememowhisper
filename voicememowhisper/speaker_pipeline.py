@@ -78,12 +78,12 @@ class SpeakerPipeline:
         label
             Human-readable name used in log lines.
         target_stem
-            If given, the copies of `transcript.md` / `transcript.txt` landing
-            in `transcript_dir` will be renamed from the audio-stem default
-            (e.g. `20260420 110030`) to this value — typically the canonical
-            `YYYY-MM-DD_HH-MM-SS_<title>` stem the watcher uses so the output
-            stays consistent with the pre-speaker-ID naming convention and
-            existing vault backlinks keep working.
+            If given, used as the `recording_id` so that `runs/<target_stem>/`
+            and `outputs/<target_stem>/` are named after the canonical
+            `YYYY-MM-DD_HH-MM-SS_<title>` stem instead of the raw Voice Memos
+            filename (`YYYYMMDD HHMMSS`). The copies of `transcript.md` /
+            `transcript.txt` landing in `transcript_dir` are also renamed to
+            this value so vault backlinks keep working.
         """
         display = label or audio_path.stem
         if not audio_path.exists():
@@ -111,6 +111,7 @@ class SpeakerPipeline:
             runs_dir=self._runs_dir,
             output_dir=self._output_dir,
             output_transcript_dir=self.settings.transcript_dir,
+            recording_id=target_stem,
         )
         elapsed = time.monotonic() - t0
 

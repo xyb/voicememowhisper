@@ -98,6 +98,40 @@ def _build_asr_backend_kwargs(args: argparse.Namespace) -> dict:
             if merged_key in merged:
                 cfg[http_key] = merged[merged_key]
         kwargs["asr_backend_config"] = cfg
+
+    # Overlay diarize-* flags on top of the config-file values.
+    for flag in (
+        "diarize_backend",
+        "diarize_url",
+        "diarize_api_key",
+        "diarize_host_header",
+        "diarize_timeout_sec",
+        "diarize_include_embeddings",
+        "diarize_num_speakers",
+        "diarize_min_speakers",
+        "diarize_max_speakers",
+    ):
+        val = getattr(args, flag, None)
+        if val is not None:
+            merged[flag] = val
+
+    d_backend = merged.get("diarize_backend") or "local_pyannote"
+    kwargs["diarize_backend"] = d_backend
+    if d_backend == "http":
+        dcfg: dict = {}
+        for merged_key, http_key in (
+            ("diarize_url", "url"),
+            ("diarize_api_key", "api_key"),
+            ("diarize_host_header", "host_header"),
+            ("diarize_timeout_sec", "timeout_sec"),
+            ("diarize_include_embeddings", "include_embeddings"),
+            ("diarize_num_speakers", "num_speakers"),
+            ("diarize_min_speakers", "min_speakers"),
+            ("diarize_max_speakers", "max_speakers"),
+        ):
+            if merged_key in merged:
+                dcfg[http_key] = merged[merged_key]
+        kwargs["diarize_backend_config"] = dcfg
     return kwargs
 
 
@@ -121,6 +155,8 @@ def _cmd_single_step(step_num: int, args: argparse.Namespace) -> int:
         to_step=step_num,
         force=True,
         recording_id=getattr(args, "recording_id", None),
+        archive=not getattr(args, "no_archive", False),
+        archive_dir=_path_or_none(getattr(args, "archive_dir", None)),
         **_build_asr_backend_kwargs(args),
     )
     return 0
@@ -144,6 +180,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
         to_step=args.to_step,
         force=args.force,
         recording_id=args.recording_id,
+        archive=not getattr(args, "no_archive", False),
+        archive_dir=_path_or_none(getattr(args, "archive_dir", None)),
         **_build_asr_backend_kwargs(args),
     )
     return 0
@@ -210,7 +248,8 @@ def _cmd_library(args: argparse.Namespace) -> int:
         print(f"library: {library}\n")
         rows = []
         clip_exts = {".wav", ".m4a", ".flac", ".mp3", ".ogg"}
-        for d in sorted(p for p in library.iterdir() if p.is_dir()):
+        from .library import is_speaker_dir
+        for d in sorted(p for p in library.iterdir() if is_speaker_dir(p)):
             clips_dir = d / "clips"
             clips = (
                 sorted(p for p in clips_dir.iterdir()
@@ -247,7 +286,7 @@ def _cmd_library(args: argparse.Namespace) -> int:
         print(f"copied {clip} → {target}")
 
         # Populate profile.json with the human-readable display_name up front
-        # when the speaker dir is new, so xyb doesn't have to hand-edit the
+        # when the speaker dir is new, so the user doesn't have to hand-edit the
         # JSON every time. Skipped if profile.json already exists (preserves
         # prior manual edits on re-enrollment of an existing speaker).
         display_name = getattr(args, "display_name", None)
@@ -281,6 +320,242 @@ def _cmd_library(args: argparse.Namespace) -> int:
     if args.lib_action == "score":
         return _cmd_library_score(args, library)
 
+    if args.lib_action == "badcase-add":
+        return _cmd_library_badcase_add(args, library)
+
+    if args.lib_action == "find-candidates":
+        return _cmd_library_find_candidates(args, library)
+
+    return 0
+
+
+def _cmd_library_find_candidates(args: argparse.Namespace, library: Path) -> int:
+    """List longest independent blocks per speaker in a cached recording."""
+    import json as _json
+    import subprocess as _sp
+
+    runs_dir = _path_or_default(getattr(args, "runs", None), DEFAULT_RUNS)
+    rid = getattr(args, "recording_id", None)
+    if not rid and getattr(args, "audio", None):
+        rid = Path(args.audio).expanduser().stem
+    if not rid:
+        candidates = sorted(
+            (d for d in runs_dir.iterdir() if d.is_dir()),
+            key=lambda d: d.stat().st_mtime,
+            reverse=True,
+        )
+        if not candidates:
+            print(f"no cached runs found under {runs_dir}", file=sys.stderr)
+            return 2
+        rid = candidates[0].name
+        print(f"# using most recently-modified run: {rid}", file=sys.stderr)
+
+    merged_path = runs_dir / rid / "merged.json"
+    if not merged_path.exists():
+        print(f"merged.json not found: {merged_path}", file=sys.stderr)
+        print("(run `si run` through stage 4 first)", file=sys.stderr)
+        return 2
+
+    data = _json.loads(merged_path.read_text(encoding="utf-8"))
+    segs = data.get("segments", [])
+
+    # Group consecutive same-speaker segments into blocks
+    groups: list[dict] = []
+    cur: dict | None = None
+    for s in segs:
+        spk = s.get("speaker_label") or s.get("speaker")
+        name = s.get("speaker_name") or ""
+        if cur and cur["spk"] == spk:
+            cur["end"] = s["end"]
+            cur["text"] += s.get("text", "")
+        else:
+            if cur:
+                groups.append(cur)
+            cur = {
+                "spk": spk,
+                "name": name,
+                "start": s["start"],
+                "end": s["end"],
+                "text": s.get("text", ""),
+            }
+    if cur:
+        groups.append(cur)
+
+    # Index by speaker
+    by_spk: dict[str, list[dict]] = {}
+    for g in groups:
+        by_spk.setdefault(g["spk"], []).append(g)
+
+    # Filter to one speaker if requested (match by label OR display name)
+    target_filter = getattr(args, "speaker", None)
+    if target_filter:
+        match_spks = [
+            spk
+            for spk, blocks in by_spk.items()
+            if spk == target_filter
+            or (blocks and blocks[0]["name"] == target_filter)
+        ]
+        if not match_spks:
+            available = sorted(
+                f"{spk} ({blocks[0]['name'] or '?'})"
+                for spk, blocks in by_spk.items()
+            )
+            print(f"no speaker matches '{target_filter}'", file=sys.stderr)
+            print(f"available: {', '.join(available)}", file=sys.stderr)
+            return 2
+        by_spk = {spk: by_spk[spk] for spk in match_spks}
+
+    audio_path = (
+        Path(args.audio).expanduser().resolve()
+        if getattr(args, "audio", None)
+        else None
+    )
+    cut_middle = getattr(args, "cut_middle_sec", None)
+    out_dir = Path(getattr(args, "out_dir", "/tmp")).expanduser()
+    if cut_middle and not audio_path:
+        print("--cut-middle-sec requires --audio", file=sys.stderr)
+        return 2
+    if cut_middle:
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+    top_n = max(1, int(getattr(args, "top", 5)))
+    min_dur = float(getattr(args, "min_duration", 10.0))
+
+    for spk in sorted(by_spk):
+        blocks = by_spk[spk]
+        total_dur = sum(g["end"] - g["start"] for g in blocks)
+        long_blocks = sorted(
+            (g for g in blocks if (g["end"] - g["start"]) >= min_dur),
+            key=lambda g: -(g["end"] - g["start"]),
+        )[:top_n]
+        name = blocks[0]["name"] or "(unknown)"
+        print(f"=== {spk} → {name}  total {total_dur:.1f}s, "
+              f"{len(blocks)} blocks, top {len(long_blocks)} ≥ {min_dur:.0f}s ===")
+        for i, g in enumerate(long_blocks, 1):
+            dur = g["end"] - g["start"]
+            preview = g["text"][:60].replace("\n", " ")
+            print(f"  [{i}] {g['start']:7.1f}-{g['end']:7.1f}  {dur:5.1f}s  {preview}")
+            if cut_middle and audio_path:
+                cut_dur = min(cut_middle, dur)
+                ss = g["start"] + max(0.0, (dur - cut_dur) / 2)
+                clip_name = f"{spk}-{i:02d}-{int(ss)}-{int(ss + cut_dur)}.m4a"
+                clip_path = out_dir / clip_name
+                cmd = [
+                    "ffmpeg", "-y", "-loglevel", "error",
+                    "-ss", f"{ss:.2f}", "-i", str(audio_path),
+                    "-t", f"{cut_dur:.2f}", "-c", "copy", str(clip_path),
+                ]
+                try:
+                    _sp.run(cmd, check=True)
+                    print(f"      cut → {clip_path}")
+                except (FileNotFoundError, _sp.CalledProcessError) as e:
+                    print(f"      ffmpeg failed: {e}", file=sys.stderr)
+        print()
+    return 0
+
+
+def _cmd_library_badcase_add(args: argparse.Namespace, library: Path) -> int:
+    """Save a non-speaker clip + embedding + baseline cos snapshot under the
+    speaker directory it was misattributed to."""
+    import json as _json
+    import shutil as _shutil
+    import numpy as _np
+
+    from .library import is_speaker_dir
+    from .speaker_embed import CommunityOneEmbedder
+
+    clip = Path(args.clip).expanduser().resolve()
+    if not clip.exists():
+        print(f"clip not found: {clip}", file=sys.stderr)
+        return 2
+
+    speaker_dir = library / args.speaker
+    if not speaker_dir.is_dir():
+        print(f"speaker directory does not exist: {speaker_dir}", file=sys.stderr)
+        print("(badcases attach to an existing speaker — enroll the speaker first, "
+              "then add the badcase)", file=sys.stderr)
+        return 2
+
+    bc_dir = speaker_dir / "badcases" / args.badcase_id
+    (bc_dir / "clips").mkdir(parents=True, exist_ok=True)
+    target = bc_dir / "clips" / f"clip{clip.suffix.lower()}"
+    _shutil.copy2(clip, target)
+    print(f"copied {clip} → {target}")
+
+    print("loading embedder ...")
+    emb = CommunityOneEmbedder()
+    v = emb.embed_audio(target)
+    norm = _np.linalg.norm(v)
+    if norm > 0:
+        v = v / norm
+    _np.save(str(bc_dir / "embedding.npy"), v)
+
+    baselines: dict[str, float] = {}
+    for d in sorted(p for p in library.iterdir() if is_speaker_dir(p)):
+        e_path = d / "embedding.npy"
+        if not e_path.exists():
+            continue
+        e = _np.load(str(e_path))
+        e_norm = _np.linalg.norm(e)
+        if e_norm > 0:
+            e = e / e_norm
+        baselines[d.name] = round(float(_np.dot(v, e)), 4)
+
+    max_cos = max(baselines.values()) if baselines else 0.0
+    max_speaker = max(baselines, key=baselines.get) if baselines else None
+    from datetime import date as _date
+    today = _date.today().isoformat()
+
+    meta = {
+        "badcase_id": args.badcase_id,
+        "kind": args.kind,
+        "false_match_speaker": args.speaker,
+        "source_recording": args.source_recording,
+        "source_time_range": args.source_time_range,
+        "description": args.description or "",
+        "max_cos_allowed": args.max_cos_allowed,
+        f"baseline_cos_against_speakers_{today}": baselines,
+        "max_cos": max_cos,
+        "max_cos_speaker": max_speaker,
+    }
+    (bc_dir / "meta.json").write_text(
+        _json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    print(f"wrote {bc_dir / 'meta.json'}")
+
+    # Append a summary entry to the speaker's profile.json so the existence of
+    # this badcase is visible without opening the meta.json. Keeps profile.json
+    # as the single-stop overview of a speaker (clips + notes + badcases).
+    profile_path = speaker_dir / "profile.json"
+    profile = (
+        _json.loads(profile_path.read_text(encoding="utf-8"))
+        if profile_path.exists()
+        else {"speaker_id": args.speaker, "display_name": args.speaker, "aliases": [], "notes": ""}
+    )
+    badcase_summary = {
+        "badcase_id": args.badcase_id,
+        "kind": args.kind,
+        "max_cos_at_enrollment": baselines.get(args.speaker, 0.0),
+        "source_recording": args.source_recording,
+        "source_time_range": args.source_time_range,
+    }
+    if args.description:
+        badcase_summary["note"] = args.description
+    existing_badcases = profile.get("badcases", [])
+    # Replace by id if already present (idempotent re-add).
+    existing_badcases = [b for b in existing_badcases if b.get("badcase_id") != args.badcase_id]
+    existing_badcases.append(badcase_summary)
+    profile["badcases"] = existing_badcases
+    profile_path.write_text(
+        _json.dumps(profile, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    print(f"updated {profile_path} (badcases entry)")
+
+    print(f"max cos against any real speaker: {max_cos:.4f} → {max_speaker} "
+          f"(allowed ≤ {args.max_cos_allowed})")
+    if max_cos > args.max_cos_allowed:
+        print("WARNING: baseline already exceeds max_cos_allowed", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -292,7 +567,7 @@ def _cmd_library_score(args: argparse.Namespace, library: Path) -> int:
     import numpy as np  # part of [speaker-id] extra; required for this cmd
 
     # Resolve recording_id: explicit → audio stem → most recently-modified
-    # runs subdir. Lets xyb run `si library score --recording-id X` after
+    # runs subdir. Lets the caller run `si library score --recording-id X` after
     # archiving an audio without needing the original path back.
     runs_dir = _path_or_default(getattr(args, "runs", None), DEFAULT_RUNS)
     rid = getattr(args, "recording_id", None)
@@ -461,6 +736,38 @@ def _add_asr_backend_args(p: argparse.ArgumentParser) -> None:
                    help="openai-audio per-request timeout in seconds (default: 600)")
 
 
+def _add_diarize_backend_args(p: argparse.ArgumentParser) -> None:
+    """Flags that select + configure the stage-2 diarization backend.
+
+    Defaults preserve existing behaviour (``local_pyannote`` on CPU/MPS);
+    switching to ``http`` routes to the self-hosted pyannote GPU service
+    and cuts wall-clock from ~20 min to ~90 sec on a 23-min recording.
+    """
+    p.add_argument(
+        "--diarize-backend", dest="diarize_backend", default=None,
+        choices=["local_pyannote", "http"],
+        help="Stage-2 diarization backend. 'http' calls the self-hosted "
+             "pyannote service (~12× faster on GPU). Reads from config "
+             "file if present; falls back to 'local_pyannote' otherwise.",
+    )
+    p.add_argument("--diarize-url", dest="diarize_url", default=None,
+                   help="diarize service endpoint URL "
+                        "(e.g. http://diarize.internal:8000/diarize)")
+    p.add_argument("--diarize-host-header", dest="diarize_host_header", default=None,
+                   help="Host header override for reverse-proxy routing")
+    p.add_argument("--diarize-api-key", dest="diarize_api_key", default=None,
+                   help="Bearer token (omit for no-auth self-hosted)")
+    p.add_argument("--diarize-timeout-sec", dest="diarize_timeout_sec", type=float,
+                   default=None,
+                   help="per-request timeout in seconds (default: 900)")
+    p.add_argument("--diarize-num-speakers", dest="diarize_num_speakers", type=int,
+                   default=None, help="hint: exact number of speakers")
+    p.add_argument("--diarize-min-speakers", dest="diarize_min_speakers", type=int,
+                   default=None, help="hint: minimum number of speakers")
+    p.add_argument("--diarize-max-speakers", dest="diarize_max_speakers", type=int,
+                   default=None, help="hint: maximum number of speakers")
+
+
 def _add_stage_specific_args(name: str, p: argparse.ArgumentParser) -> None:
     if name == "transcribe":
         p.add_argument("--model", default="medium",
@@ -470,6 +777,8 @@ def _add_stage_specific_args(name: str, p: argparse.ArgumentParser) -> None:
         p.add_argument("--compute-type", default="int8",
                        help="int8 / int8_float16 / float16 / float32 (default: int8)")
         _add_asr_backend_args(p)
+    if name == "diarize":
+        _add_diarize_backend_args(p)
     if name == "identify":
         p.add_argument("--threshold", type=float, default=0.5,
                        help="Cosine match threshold (default: 0.5)")
@@ -521,7 +830,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Re-run in-window steps even if cached output exists.")
     sr.add_argument("--skip-identify", action="store_true",
                     help="Skip the identify stage (treats it as no-op)")
+    sr.add_argument("--no-archive", action="store_true",
+                    help="Don't move source audio to the archive dir after a "
+                         "successful end-to-end run.")
+    sr.add_argument("--archive-dir", default=None,
+                    help="Override archive destination "
+                         "(default: ~/Documents/VoiceMemoWhisper/Audio).")
     _add_asr_backend_args(sr)
+    _add_diarize_backend_args(sr)
     sr.set_defaults(_handler=_cmd_run)
 
     # `library`.
@@ -545,6 +861,68 @@ def build_parser() -> argparse.ArgumentParser:
                      help="Don't rebuild the embedding after copying")
     slr = lsub.add_parser("rebuild", help="Recompute centroid embeddings")
     slr.add_argument("--speaker", help="Restrict to a single speaker id (default: all speakers)")
+    # `badcase-add` — store a known-bad clip (env noise / wrong-attribution / overlap)
+    # under <library>/<false-match-speaker>/badcases/<id>/ together with its embedding
+    # and a baseline cos snapshot against every current real speaker. Owning the
+    # badcase by the speaker it was misattributed to keeps the directory layout flat
+    # at the top (only real speakers) and makes the false-match relationship explicit.
+    slba = lsub.add_parser(
+        "badcase-add",
+        help="Add a non-speaker clip (noise / overlap / mis-diarized) as a regression badcase",
+        description="Saves the clip + its embedding + cos-vs-every-real-speaker baseline "
+                    "under <library>/<speaker>/badcases/<id>/. <speaker> is the speaker the "
+                    "clip was MISATTRIBUTED to during identify (the false match), not the "
+                    "speaker the clip actually contains.",
+    )
+    slba.add_argument("speaker",
+                      help="Speaker id this badcase was falsely attributed to during identify "
+                           "(directory under the library)")
+    slba.add_argument("badcase_id",
+                      help="Folder name under <speaker>/badcases/ "
+                           "(suggested format: <date>-<source-cluster>-<kind>-<duration>)")
+    slba.add_argument("clip", help="Path to clip file")
+    slba.add_argument("--kind", default="env_noise",
+                      help="Tag describing the badcase type (env_noise, overlap, cross_talk, ...). "
+                           "Default: env_noise")
+    slba.add_argument("--source-recording", default=None,
+                      help="Source recording filename")
+    slba.add_argument("--source-time-range", default=None,
+                      help="Time range in source (e.g. '632.1-641.6 (9.5s)')")
+    slba.add_argument("--description", default=None,
+                      help="Free-form notes about why this is a badcase")
+    slba.add_argument("--max-cos-allowed", type=float, default=0.5,
+                      help="Acceptable upper bound for cos vs any real speaker (default: 0.5).")
+    # `find-candidates` — for a given cached recording, list each speaker's longest
+    # independent monologue blocks. Used during library cleanup: pick a clean clip
+    # to enroll an under-matched speaker. Reads merged.json (no ML reload).
+    slfc = lsub.add_parser(
+        "find-candidates",
+        help="List longest independent blocks per speaker in a cached recording (for picking enrollment clips)",
+        description="For each speaker in a cached recording's merged.json, group "
+                    "consecutive same-speaker segments into blocks and print the "
+                    "longest N blocks. Use to pick a candidate enrollment clip without "
+                    "manually parsing JSON. Optionally cuts clips with ffmpeg.",
+    )
+    slfc.add_argument("--audio",
+                      help="Audio path — uses its stem as recording_id by default.")
+    slfc.add_argument("--recording-id", dest="recording_id",
+                      help="Recording id (runs/<id>/ subdir name). If neither --audio "
+                           "nor --recording-id is given, picks the most recently-updated "
+                           "runs/ subdir.")
+    slfc.add_argument("--runs", help=f"Runs directory (default: {DEFAULT_RUNS})")
+    slfc.add_argument("--speaker", default=None,
+                      help="Filter to one speaker (cluster label like 'SPEAKER_02' or "
+                           "display name from the speaker library). Default: list every speaker.")
+    slfc.add_argument("--top", type=int, default=5,
+                      help="Top N longest blocks per speaker (default: 5).")
+    slfc.add_argument("--min-duration", type=float, default=10.0,
+                      help="Skip blocks shorter than this many seconds (default: 10).")
+    slfc.add_argument("--cut-middle-sec", type=float, default=None,
+                      help="If set, also cut the middle N seconds of each top block as "
+                           "a candidate clip (requires --audio). Files written to /tmp/ "
+                           "by default, override with --out-dir.")
+    slfc.add_argument("--out-dir", default="/tmp",
+                      help="Where to write cut clips (default: /tmp).")
     # `score` — cross-match a cached recording's speakers against the library.
     # Pure numpy (reads cached .npz), so safe to run in parallel with a live
     # pyannote pipeline and fast enough for interactive iteration.

@@ -37,6 +37,7 @@ from pathlib import Path
 import numpy as np
 
 from . import contracts
+from .library import is_speaker_dir
 from .speaker_embed import CommunityOneEmbedder, cosine_similarity
 
 
@@ -44,7 +45,7 @@ def load_library(library_dir: Path) -> dict[str, tuple[np.ndarray, str]]:
     """Return {speaker_id: (centroid_1d, display_name)}."""
     library: dict[str, tuple[np.ndarray, str]] = {}
     for speaker_dir in sorted(library_dir.iterdir()):
-        if not speaker_dir.is_dir() or speaker_dir.name.startswith("."):
+        if not is_speaker_dir(speaker_dir):
             continue
         emb_path = speaker_dir / "embedding.npy"
         if not emb_path.exists():

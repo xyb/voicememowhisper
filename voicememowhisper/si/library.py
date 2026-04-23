@@ -47,6 +47,20 @@ import numpy as np
 from .speaker_embed import CommunityOneEmbedder
 
 
+# Top-level subdirectories under speaker-library/ that are NOT speakers and
+# must be skipped by all enrollment / identify / index logic. Currently empty:
+# badcases live inside each speaker dir as `<speaker>/badcases/<id>/`, so the
+# top level only contains real speakers. Kept as a hook for future reserved
+# names (templates, tests, …) — adding a name here uniformly excludes it from
+# every iteration site that calls `is_speaker_dir`.
+RESERVED_SUBDIRS: frozenset[str] = frozenset()
+
+
+def is_speaker_dir(p: Path) -> bool:
+    """True if `p` is a speaker directory (i.e. not a reserved subdir)."""
+    return p.is_dir() and not p.name.startswith(".") and p.name not in RESERVED_SUBDIRS
+
+
 def load_or_init_profile(speaker_dir: Path) -> dict:
     profile_path = speaker_dir / "profile.json"
     if profile_path.exists():
@@ -165,9 +179,7 @@ def run_build(library_dir: Path, speaker_filter: str | None = None) -> int:
             return 2
         speaker_dirs.append(d)
     else:
-        speaker_dirs = sorted(
-            d for d in library_dir.iterdir() if d.is_dir() and not d.name.startswith(".")
-        )
+        speaker_dirs = sorted(d for d in library_dir.iterdir() if is_speaker_dir(d))
 
     if not speaker_dirs:
         print("[04_library] no speaker directories found")

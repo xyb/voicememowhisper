@@ -100,6 +100,10 @@ def run(
     recording_id: str | None = None,
     asr_backend: str = "faster_whisper",
     asr_backend_config: dict | None = None,
+    diarize_backend: str = "local_pyannote",
+    diarize_backend_config: dict | None = None,
+    archive_dir: Path | None = None,
+    archive: bool = True,
 ) -> Path | None:
     """Run the speaker-id pipeline.
 
@@ -122,6 +126,17 @@ def run(
       ``response_format`` / ``timeout_sec``. Cache file:
       ``transcript_openai_audio.json``. The ``model`` / ``compute_type``
       args above are ignored for this backend.
+
+    ``diarize_backend`` picks the diarization engine for stage 2:
+
+    - ``"local_pyannote"`` (default): in-process pyannote.audio on
+      CPU/MPS. 20+ minutes on a 23-min recording on Mac CPU.
+    - ``"http"``: HTTP call to the self-hosted pyannote service.
+      Requires ``diarize_backend_config`` with at least ``url``;
+      optional ``host_header`` / ``api_key`` / ``include_embeddings``
+      / ``num_speakers`` / ``min_speakers`` / ``max_speakers`` /
+      ``timeout_sec``. Cache file: ``diarization_pyannote.json`` (same
+      as local — the output schema is identical).
     """
     from_n = resolve_step(from_step)
     to_n = resolve_step(to_step)
@@ -171,6 +186,11 @@ def run(
         cfg_model = cfg.get("model", "?")
         cfg_url = cfg.get("url", "?")
         print(f"[pipeline] asr:       {asr_backend} / {cfg_model} @ {cfg_url}")
+    if diarize_backend == "local_pyannote":
+        print(f"[pipeline] diarize:   local_pyannote / community-1")
+    else:
+        dcfg = diarize_backend_config or {}
+        print(f"[pipeline] diarize:   {diarize_backend} @ {dcfg.get('url', '?')}")
     print(f"[pipeline] library:   {library_dir}")
     print(f"[pipeline] steps:     {from_n} ({STEP_BY_NUM[from_n]}) → "
           f"{to_n} ({STEP_BY_NUM[to_n]}){'  [force]' if force else ''}")
@@ -264,7 +284,7 @@ def run(
         if diarization_path.exists():
             print(f"{_stage_header(2,'diarize')} cached → {diarization_path}")
             diar_obj = contracts.Diarization.from_json(diarization_path)
-        else:
+        elif diarize_backend == "local_pyannote":
             # pyannote has no linear time-axis the bar can track against,
             # so we leave total=None — the DiarizeProgressHook surfaces
             # sub-step boundaries + per-substep counters instead.
@@ -290,6 +310,38 @@ def run(
                     f"{len(diar_obj.segments)} segments, "
                     f"{_peak_rss_mb():.1f} MB RSS"
                 )
+        elif diarize_backend == "http":
+            from .diarize_backends import http as mod_diarize_http
+
+            cfg_dict = dict(diarize_backend_config or {})
+            if "url" not in cfg_dict:
+                raise ValueError(
+                    "diarize_backend='http' requires diarize_backend_config "
+                    "with at least 'url'"
+                )
+            cfg = mod_diarize_http.DiarizeHTTPConfig(**cfg_dict)
+            with StageProgress(
+                "diarize", stage_num=2, total_stages=len(STEPS),
+            ) as prog:
+                prog.note(f"backend=http url={cfg.url}")
+                diar_obj, duration_sec, _labels = mod_diarize_http.run_diarization(
+                    audio_path, cfg, embeddings_out_path=embeddings_path,
+                )
+                diar_obj.to_json(diarization_path)
+                if duration_sec and transcript_obj is not None and transcript_obj.duration_sec == 0:
+                    transcript_obj.duration_sec = duration_sec
+                    transcript_obj.to_json(transcript_path)
+                wall = getattr(diar_obj, "_wall_clock_sec", None)
+                infer = getattr(diar_obj, "_infer_sec", None)
+                prog.note(
+                    f"{diar_obj.num_speakers} speakers, "
+                    f"{len(diar_obj.segments)} segments, "
+                    f"{_peak_rss_mb():.1f} MB RSS"
+                    + (f", wall {wall}s" if wall else "")
+                    + (f", infer {infer}s" if infer else "")
+                )
+        else:
+            raise ValueError(f"unknown diarize_backend: {diarize_backend!r}")
         print()
     elif 3 <= to_n:
         _require_cache(diarization_path, 2)
@@ -407,6 +459,30 @@ def run(
             shutil.copy2(txt_path, target_txt)
             print(f"[pipeline] copied → {target_md}")
             print(f"[pipeline] copied → {target_txt}")
+
+    # ── Auto-archive source audio ────────────────────────────────────
+    # Run only when stage 5 succeeded (so we know the recording was processed
+    # end-to-end) and archive=True. For workflows that don't run the watcher
+    # daemon, `si run` is the only entry that can keep Inbox/ from growing
+    # forever. Skip if source already lives under the archive dir, or if dest
+    # exists (idempotent).
+    if archive and to_n >= 5 and md_path is not None:
+        if archive_dir is None:
+            archive_dir = Path.home() / "Documents/VoiceMemoWhisper/Audio"
+        archive_dir = Path(archive_dir)
+        try:
+            already_archived = audio_path.resolve().is_relative_to(archive_dir.resolve())
+        except (AttributeError, ValueError):
+            # is_relative_to is 3.9+; on older Pythons or non-overlapping paths
+            already_archived = str(audio_path.resolve()).startswith(str(archive_dir.resolve()))
+        if not already_archived:
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            target = archive_dir / audio_path.name
+            if target.exists():
+                print(f"[archive] target exists, skipping → {target}")
+            else:
+                shutil.move(str(audio_path), str(target))
+                print(f"[archive] moved → {target}")
 
     total_elapsed = time.monotonic() - total_start
     print()

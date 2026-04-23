@@ -70,6 +70,18 @@ _HTTP_KEY_MAP = {
     "timeout_sec": "asr_timeout_sec",
 }
 
+# [diarize.http] → CLI namespace keys.
+_DIARIZE_HTTP_KEY_MAP = {
+    "url": "diarize_url",
+    "api_key": "diarize_api_key",
+    "host_header": "diarize_host_header",
+    "timeout_sec": "diarize_timeout_sec",
+    "include_embeddings": "diarize_include_embeddings",
+    "num_speakers": "diarize_num_speakers",
+    "min_speakers": "diarize_min_speakers",
+    "max_speakers": "diarize_max_speakers",
+}
+
 
 def default_config_paths() -> list[Path]:
     """Search paths in priority order. First existing file wins."""
@@ -130,6 +142,16 @@ def load_asr_config(explicit: str | Path | None = None) -> dict[str, Any]:
         mapped = _HTTP_KEY_MAP.get(k)
         if mapped is None:
             continue  # unknown key — ignore silently
+        out[mapped] = v
+
+    diarize = data.get("diarize") or {}
+    if "backend" in diarize:
+        out["diarize_backend"] = str(diarize["backend"])
+    diar_http = diarize.get("http") or {}
+    for k, v in diar_http.items():
+        mapped = _DIARIZE_HTTP_KEY_MAP.get(k)
+        if mapped is None:
+            continue
         out[mapped] = v
 
     return out
