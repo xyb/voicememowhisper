@@ -131,82 +131,195 @@ def _load_audio_mono_16k(audio: Path):
         tmp_path.unlink(missing_ok=True)
 
 
-def _build_figure(data: dict, audio: Path, out_png: Path) -> tuple[int, int]:
-    """Render waveform + spectrogram PNG. Return (width_px, height_px)."""
+_PX_PER_SECOND = 120     # viewer zoom — how many pixels 1 second of audio takes
+_TILE_SECONDS = 30       # each matplotlib tile covers this much time
+_TILE_HEIGHT_PX = 250    # fixed tile height. ~1/3 of the original 750 —
+                         # waveform + spectrogram still readable, a lot
+                         # less vertical real estate.
+_DPI = 150
+_OVERVIEW_HEIGHT_PX = 80
+
+
+def _render_tile(
+    samples,
+    sr: int,
+    t_start: float,
+    t_end: float,
+    words_in_window: list[dict],
+    all_word_indices: list[int],
+    out_png: Path,
+    *,
+    with_xaxis: bool,
+) -> tuple[int, int]:
+    """Render one time-window of the waveform + spectrogram as a PNG tile.
+
+    ``all_word_indices`` is the global index of each word in
+    ``words_in_window`` so band colors stay consistent across tiles.
+    """
     import matplotlib.pyplot as plt
     import numpy as np
     from scipy.signal import spectrogram
 
     _configure_mpl_fonts()
 
+    tile_seconds = t_end - t_start
+    tile_w_px = int(tile_seconds * _PX_PER_SECOND)
+    tile_w_in = tile_w_px / _DPI
+    tile_h_in = _TILE_HEIGHT_PX / _DPI
+
+    # Slice samples for this tile window
+    i0 = int(t_start * sr)
+    i1 = int(t_end * sr)
+    seg_samples = samples[i0:i1]
+    t_seg = np.arange(len(seg_samples)) / sr + t_start
+
+    fig = plt.figure(figsize=(tile_w_in, tile_h_in), dpi=_DPI)
+    ax_wave = fig.add_axes([0.0, _WAVE_BOTTOM, 1.0, _WAVE_TOP - _WAVE_BOTTOM])
+    ax_spec = fig.add_axes([0.0, _SPEC_BOTTOM, 1.0, _SPEC_TOP - _SPEC_BOTTOM])
+
+    ax_wave.plot(t_seg, seg_samples, color="#1f2937", linewidth=0.5)
+    ax_wave.set_ylim(-1.05, 1.05)
+    ax_wave.set_xlim(t_start, t_end)
+    ax_wave.set_xticks([])
+    ax_wave.set_yticks([])
+
+    if len(seg_samples) > 0:
+        f, t, Sxx = spectrogram(seg_samples, fs=sr, nperseg=512, noverlap=384)
+        Sdb = 10 * np.log10(Sxx + 1e-10)
+        vmin = np.percentile(Sdb, 5)
+        vmax = np.percentile(Sdb, 99)
+        ax_spec.pcolormesh(t + t_start, f, Sdb, shading="auto",
+                           cmap="magma", vmin=vmin, vmax=vmax)
+    ax_spec.set_ylim(0, 4000)
+    ax_spec.set_xlim(t_start, t_end)
+    # Hide ticks — the HTML layer renders its own time ruler if needed
+    ax_spec.set_xticks([])
+    ax_spec.set_yticks([])
+
+    cmap = plt.get_cmap("tab20")
+    for w, gi in zip(words_in_window, all_word_indices):
+        r, g, b, _ = cmap(gi % cmap.N)
+        wave_color = (r, g, b, 0.28)
+        spec_color = (r, g, b, 0.16)
+        # Clamp band to tile edges so a word that straddles two tiles
+        # shows on both without overflow.
+        ws = max(w["start"], t_start)
+        we = min(w["end"], t_end)
+        if we <= ws:
+            continue
+        ax_wave.axvspan(ws, we, facecolor=wave_color,
+                        edgecolor="none", zorder=-1)
+        ax_spec.axvspan(ws, we, facecolor=spec_color,
+                        edgecolor="none", zorder=3)
+        for x in (w["start"], w["end"]):
+            if t_start <= x <= t_end:
+                ax_wave.axvline(x, color="#6b7280", linewidth=0.4, alpha=0.5)
+                ax_spec.axvline(x, color="#ffffff", linewidth=0.4, alpha=0.4)
+
+    fig.savefig(out_png, dpi=_DPI)
+    plt.close(fig)
+    return tile_w_px, _TILE_HEIGHT_PX
+
+
+def _build_tiles(data: dict, audio: Path, out_dir: Path) -> list[dict]:
+    """Render the full audio as a series of equal-time PNG tiles.
+
+    Returns a list of {"file": name, "start": float, "end": float,
+    "width_px": int, "height_px": int}.
+    """
     sr, samples = _load_audio_mono_16k(audio)
-    t_audio = np.arange(len(samples)) / sr
     duration = len(samples) / sr
 
     words: list[dict] = []
     for seg in data["segments"]:
         words.extend(seg.get("words", []))
 
+    # Precompute tile boundaries; absorb any tail shorter than 1s into the
+    # previous tile so we don't try to run spectrogram on <512 samples.
+    boundaries: list[float] = [0.0]
+    t = _TILE_SECONDS
+    while t < duration:
+        boundaries.append(t)
+        t += _TILE_SECONDS
+    boundaries.append(duration)
+    # Merge a too-short final segment into its predecessor.
+    if len(boundaries) >= 3 and (boundaries[-1] - boundaries[-2]) < 1.0:
+        boundaries.pop(-2)
+
+    tiles: list[dict] = []
+    for tile_idx in range(len(boundaries) - 1):
+        t_start = boundaries[tile_idx]
+        t_end = boundaries[tile_idx + 1]
+        window: list[dict] = []
+        window_gi: list[int] = []
+        for gi, w in enumerate(words):
+            if w["end"] <= t_start or w["start"] >= t_end:
+                continue
+            window.append(w)
+            window_gi.append(gi)
+        tile_name = f"tile_{tile_idx:03d}.png"
+        tile_path = out_dir / tile_name
+        w_px, h_px = _render_tile(
+            samples, sr, t_start, t_end, window, window_gi, tile_path,
+            with_xaxis=False,
+        )
+        tiles.append({
+            "file": tile_name, "start": t_start, "end": t_end,
+            "width_px": w_px, "height_px": h_px,
+        })
+    return tiles
+
+
+def _render_overview(
+    samples,
+    sr: int,
+    duration: float,
+    words: list[dict],
+    out_png: Path,
+    width_px: int = 1400,
+) -> tuple[int, int]:
+    """Compact waveform strip covering the full audio, for navigation."""
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    _configure_mpl_fonts()
+
+    w_in = width_px / _DPI
+    h_in = _OVERVIEW_HEIGHT_PX / _DPI
+    fig = plt.figure(figsize=(w_in, h_in), dpi=_DPI)
+    ax = fig.add_axes([0.0, 0.1, 1.0, 0.9])
+    t_axis = np.arange(len(samples)) / sr
+    ax.plot(t_axis, samples, color="#334155", linewidth=0.3)
+    ax.set_ylim(-1.05, 1.05)
+    ax.set_xlim(0, duration)
+    ax.set_xticks([])
+    ax.set_yticks([])
+
+    # Faint color bands for each word so overview echoes main view
     cmap = plt.get_cmap("tab20")
-
-    def band_color(i: int, alpha: float = 0.28) -> tuple:
-        r, g, b, _ = cmap(i % cmap.N)
-        return (r, g, b, alpha)
-
-    fig_w_in = min(24, max(14, duration * 1.8))
-    fig_h_in = 5.0
-    dpi = 150
-    fig = plt.figure(figsize=(fig_w_in, fig_h_in), dpi=dpi)
-    ax_wave = fig.add_axes([_PLOT_LEFT, _WAVE_BOTTOM,
-                            _PLOT_RIGHT - _PLOT_LEFT,
-                            _WAVE_TOP - _WAVE_BOTTOM])
-    ax_spec = fig.add_axes([_PLOT_LEFT, _SPEC_BOTTOM,
-                            _PLOT_RIGHT - _PLOT_LEFT,
-                            _SPEC_TOP - _SPEC_BOTTOM])
-
-    ax_wave.plot(t_audio, samples, color="#1f2937", linewidth=0.5)
-    ax_wave.set_ylim(-1.05, 1.05)
-    ax_wave.set_xlim(0, duration)
-    ax_wave.set_xticks([])
-    ax_wave.set_yticks([])
-
-    f, t, Sxx = spectrogram(samples, fs=sr, nperseg=512, noverlap=384)
-    Sdb = 10 * np.log10(Sxx + 1e-10)
-    vmin = np.percentile(Sdb, 5)
-    vmax = np.percentile(Sdb, 99)
-    ax_spec.pcolormesh(t, f, Sdb, shading="auto", cmap="magma",
-                       vmin=vmin, vmax=vmax)
-    ax_spec.set_ylim(0, 4000)
-    ax_spec.set_xlim(0, duration)
-    ax_spec.set_ylabel("Hz", fontsize=8)
-    ax_spec.set_xlabel("s", fontsize=8)
-    ax_spec.tick_params(axis="both", labelsize=7)
-
     for i, w in enumerate(words):
-        color = band_color(i)
-        spec_color = (color[0], color[1], color[2], 0.16)
-        ax_wave.axvspan(w["start"], w["end"], facecolor=color,
-                        edgecolor="none", zorder=-1)
-        ax_spec.axvspan(w["start"], w["end"], facecolor=spec_color,
-                        edgecolor="none", zorder=3)
-        for x in (w["start"], w["end"]):
-            ax_wave.axvline(x, color="#6b7280", linewidth=0.4, alpha=0.5)
-            ax_spec.axvline(x, color="#ffffff", linewidth=0.4, alpha=0.4)
+        r, g, b, _ = cmap(i % cmap.N)
+        ax.axvspan(w["start"], w["end"],
+                   facecolor=(r, g, b, 0.25),
+                   edgecolor="none", zorder=-1)
 
-    fig.savefig(out_png, dpi=dpi)
+    fig.savefig(out_png, dpi=_DPI)
     plt.close(fig)
-    return int(fig_w_in * dpi), int(fig_h_in * dpi)
+    return width_px, _OVERVIEW_HEIGHT_PX
 
 
 def _build_html(
     data: dict,
     audio_name: str,
-    figure_name: str,
-    figure_size_px: tuple[int, int],
+    tiles: list[dict],
+    overview_name: str,
+    overview_size_px: tuple[int, int],
     out_html: Path,
 ) -> None:
-    fig_w, fig_h = figure_size_px
     duration = data.get("duration", 1.0) or 1.0
+    px_per_second = _PX_PER_SECOND
+    timeline_width_px = int(duration * px_per_second)
+    tile_height_px = _TILE_HEIGHT_PX
 
     words: list[dict] = []
     for seg in data["segments"]:
@@ -222,39 +335,57 @@ def _build_html(
             "start": w["start"],
             "end": w["end"],
             "prob": prob if prob is not None else -1,
-            "color": _TAB20_HEX[i % len(_TAB20_HEX)],
         })
 
     words_js = json.dumps(word_payload, ensure_ascii=False)
+    tiles_js = json.dumps(tiles, ensure_ascii=False)
 
     segments_list_html = "".join(
-        f'<li>[{s["start"]:.2f}–{s["end"]:.2f}] {html.escape(s.get("text", "").strip())}</li>'
+        f'<li class="seg" data-start="{s["start"]:.3f}">'
+        f'<span class="seg-ts">[{s["start"]:.2f}–{s["end"]:.2f}]</span> '
+        f'{html.escape(s.get("text", "").strip())}</li>'
         for s in data["segments"]
     )
     audio_escaped = html.escape(audio_name)
-    figure_escaped = html.escape(figure_name)
+    overview_escaped = html.escape(overview_name)
+    ov_w, ov_h = overview_size_px
     model_name = html.escape(data.get("model", "?"))
 
     out_html.write_text(f"""<!doctype html>
 <html><head><meta charset="utf-8">
 <title>Word-aligned viewer · {audio_escaped}</title>
 <style>
-  :root {{
-    --plot-left: {_PLOT_LEFT * 100:.3f}%;
-    --plot-right: {_PLOT_RIGHT * 100:.3f}%;
-  }}
   html, body {{ margin: 0; padding: 0; }}
   body {{ font-family: "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
           color: #111; background: #fafafa; padding: 1rem 1.25rem 3rem; }}
   h1 {{ font-size: 1rem; margin: 0 0 0.25rem; }}
   .meta {{ color: #555; font-size: 0.85rem; margin-bottom: 0.6rem; }}
   audio {{ width: 100%; margin-bottom: 0.5rem; }}
-  #stage {{ position: relative; width: 100%; max-width: {fig_w}px;
-            margin: 0 auto; user-select: none; }}
-  #stage img {{ display: block; width: 100%; height: auto;
-                border: 1px solid #e5e7eb; border-radius: 4px;
-                aspect-ratio: {fig_w} / {fig_h}; }}
-  #labels {{ position: relative; height: 46px; margin-bottom: 2px; }}
+
+  /* Overview strip — full audio at a glance. Clicking scrolls the main
+     view; the red rectangle shows the current visible window. */
+  #overview {{ position: relative; width: 100%; max-width: {ov_w}px;
+               margin: 0.3rem auto 0.6rem; cursor: pointer;
+               user-select: none; }}
+  #overview img {{ display: block; width: 100%; height: auto;
+                   border: 1px solid #e5e7eb; border-radius: 3px;
+                   aspect-ratio: {ov_w} / {ov_h}; }}
+  #overview-window {{ position: absolute; top: 0; bottom: 0;
+                      border: 2px solid #ef4444; background: rgba(239,68,68,0.08);
+                      pointer-events: none; box-sizing: border-box; }}
+  #overview-cursor {{ position: absolute; top: 0; bottom: 0; width: 2px;
+                      background: #ef4444; pointer-events: none;
+                      display: none; }}
+  #overview-cursor.visible {{ display: block; }}
+
+  /* Scrollable main timeline. Its inner content (#track) has a fixed
+     pixel width so word labels can be positioned in absolute px. */
+  #scroller {{ overflow-x: auto; overflow-y: hidden;
+               border: 1px solid #e5e7eb; border-radius: 4px;
+               background: #fff; }}
+  #track {{ position: relative; height: {tile_height_px + 52}px;
+            min-width: 100%; }}
+  #labels {{ position: absolute; left: 0; top: 0; right: 0; height: 48px; }}
   #labels .lab {{ position: absolute; transform: translateX(-50%);
                   white-space: nowrap; font-size: 13px; line-height: 1.2;
                   padding: 1px 3px; background: #fff;
@@ -262,14 +393,29 @@ def _build_html(
                   cursor: pointer; }}
   #labels .lab.low {{ color: #b91c1c; opacity: 0.75; border-style: dashed; }}
   #labels .lab.row0 {{ top: 1px; }}
-  #labels .lab.row1 {{ top: 22px; }}
+  #labels .lab.row1 {{ top: 23px; }}
   #labels .lab:hover {{ background: #fef3c7; z-index: 10; }}
+  #tiles {{ position: absolute; left: 0; top: 50px;
+            height: {tile_height_px}px;
+            display: flex; flex-direction: row; }}
+  #tiles img {{ display: block; height: 100%; width: auto;
+                pointer-events: none; user-select: none; }}
   #cursor {{ position: absolute; top: 0; bottom: 0; width: 2px;
              background: #ef4444; pointer-events: none;
              display: none; z-index: 20; }}
   #cursor.visible {{ display: block; }}
+  /* Clickable invisible bands over the tiles area for per-word seek */
+  #clickbands {{ position: absolute; left: 0; top: 50px;
+                 height: {tile_height_px}px; pointer-events: none; }}
+
   .legend {{ font-size: 0.75rem; color: #666; margin-top: 8px; }}
-  ul {{ color: #444; font-size: 0.9rem; line-height: 1.6; }}
+  ul {{ color: #444; font-size: 0.9rem; line-height: 1.6;
+         padding-left: 1.1rem; }}
+  li.seg {{ cursor: pointer; padding: 1px 4px; border-radius: 3px; }}
+  li.seg:hover {{ background: #eef2ff; }}
+  li.seg.active {{ background: #fef3c7; }}
+  .seg-ts {{ color: #888; font-variant-numeric: tabular-nums;
+             font-size: 0.82em; margin-right: 2px; }}
   #langswitch {{ position: fixed; top: 10px; right: 14px;
                  font-size: 11px; padding: 3px 7px;
                  background: #fff; border: 1px solid #d1d5db;
@@ -291,10 +437,19 @@ def _build_html(
 </div>
 <audio id="audio" controls src="{audio_escaped}"></audio>
 
-<div id="stage">
-  <div id="labels"></div>
-  <img id="fig" src="{figure_escaped}" alt="waveform + spectrogram">
-  <div id="cursor"></div>
+<div id="overview">
+  <img src="{overview_escaped}" alt="full-audio overview">
+  <div id="overview-window"></div>
+  <div id="overview-cursor"></div>
+</div>
+
+<div id="scroller">
+  <div id="track" style="width: {timeline_width_px}px">
+    <div id="labels"></div>
+    <div id="tiles"></div>
+    <div id="clickbands"></div>
+    <div id="cursor"></div>
+  </div>
 </div>
 
 <div class="legend" data-i18n="legend"></div>
@@ -304,7 +459,10 @@ def _build_html(
 
 <script>
 const WORDS = {words_js};
+const TILES = {tiles_js};
 const DURATION = {duration:.3f};
+const PX_PER_SECOND = {px_per_second};
+const TIMELINE_WIDTH_PX = {timeline_width_px};
 
 const I18N = {{
   en: {{
@@ -355,67 +513,110 @@ document.getElementById("langswitch").addEventListener("click", () => {{
   applyLang();
 }});
 applyLang();
-const PLOT_LEFT = {_PLOT_LEFT:.4f};
-const PLOT_RIGHT = {_PLOT_RIGHT:.4f};
-const PLOT_WIDTH = PLOT_RIGHT - PLOT_LEFT;
 
 const audio = document.getElementById("audio");
-const stage = document.getElementById("stage");
+const scroller = document.getElementById("scroller");
+const track = document.getElementById("track");
 const labels = document.getElementById("labels");
+const tilesEl = document.getElementById("tiles");
+const clickbands = document.getElementById("clickbands");
 const cursor = document.getElementById("cursor");
+const overview = document.getElementById("overview");
+const overviewWindow = document.getElementById("overview-window");
+const overviewCursor = document.getElementById("overview-cursor");
 
-function timeToPct(t) {{
-  return (PLOT_LEFT + (t / DURATION) * PLOT_WIDTH) * 100;
-}}
+function timeToPx(t) {{ return (t / DURATION) * TIMELINE_WIDTH_PX; }}
 
 function layout() {{
-  labels.innerHTML = "";
-  const oldOv = document.getElementById("clickbands");
-  if (oldOv) oldOv.remove();
-  const imgOverlay = document.createElement("div");
-  imgOverlay.id = "clickbands";
-  imgOverlay.style.position = "absolute";
-  imgOverlay.style.left = "0";
-  imgOverlay.style.right = "0";
-  imgOverlay.style.top = labels.offsetHeight + "px";
-  imgOverlay.style.bottom = "0";
-  imgOverlay.style.pointerEvents = "none";
-  stage.appendChild(imgOverlay);
+  // Tiles — render all PNGs in a flex row at their natural widths
+  tilesEl.innerHTML = "";
+  TILES.forEach(tile => {{
+    const img = document.createElement("img");
+    img.src = tile.file;
+    img.loading = "lazy";
+    img.decoding = "async";
+    img.width = tile.width_px;
+    img.height = tile.height_px;
+    img.alt = `${{tile.start.toFixed(1)}}-${{tile.end.toFixed(1)}}s`;
+    tilesEl.appendChild(img);
+  }});
 
+  // Word labels + clickable bands
+  labels.innerHTML = "";
+  clickbands.innerHTML = "";
   WORDS.forEach((w, idx) => {{
     const lab = document.createElement("div");
     const lowProb = (w.prob >= 0 && w.prob < 0.5);
     lab.className = "lab " + (idx % 2 === 0 ? "row0" : "row1") + (lowProb ? " low" : "");
     lab.textContent = w.text;
     lab.title = `${{w.start.toFixed(3)}}–${{w.end.toFixed(3)}} s${{w.prob >= 0 ? "  p=" + w.prob.toFixed(2) : ""}}`;
-    const centerPct = (timeToPct(w.start) + timeToPct(w.end)) / 2;
-    lab.style.left = centerPct + "%";
+    const center = (timeToPx(w.start) + timeToPx(w.end)) / 2;
+    lab.style.left = center + "px";
     lab.onclick = (e) => {{ e.preventDefault(); audio.currentTime = w.start; audio.play(); }};
     labels.appendChild(lab);
 
     const band = document.createElement("div");
     band.style.position = "absolute";
-    band.style.left = timeToPct(w.start) + "%";
-    band.style.width = (timeToPct(w.end) - timeToPct(w.start)) + "%";
+    band.style.left = timeToPx(w.start) + "px";
+    band.style.width = Math.max(1, timeToPx(w.end) - timeToPx(w.start)) + "px";
     band.style.top = "0";
     band.style.bottom = "0";
     band.style.cursor = "pointer";
     band.style.pointerEvents = "auto";
     band.title = `${{w.text}}  ${{w.start.toFixed(3)}}–${{w.end.toFixed(3)}}s`;
     band.onclick = () => {{ audio.currentTime = w.start; audio.play(); }};
-    imgOverlay.appendChild(band);
+    clickbands.appendChild(band);
   }});
+
+  updateOverviewWindow();
 }}
 
 function updateCursor() {{
   const t = audio.currentTime;
-  if (!isFinite(t) || t < 0) {{ cursor.classList.remove("visible"); return; }}
+  if (!isFinite(t) || t < 0) {{
+    cursor.classList.remove("visible");
+    overviewCursor.classList.remove("visible");
+    return;
+  }}
   cursor.classList.add("visible");
-  cursor.style.left = timeToPct(t) + "%";
+  cursor.style.left = timeToPx(t) + "px";
+  overviewCursor.classList.add("visible");
+  overviewCursor.style.left = ((t / DURATION) * overview.clientWidth) + "px";
+  // Keep the cursor in view while playing
+  if (!audio.paused) {{
+    const left = cursor.offsetLeft;
+    const vw = scroller.clientWidth;
+    const sl = scroller.scrollLeft;
+    if (left < sl + 50 || left > sl + vw - 50) {{
+      scroller.scrollTo({{ left: Math.max(0, left - vw * 0.3), behavior: "auto" }});
+    }}
+  }}
 }}
 
-// 60 Hz cursor while playing so it doesn't step with the browser's
-// 4-5 Hz `timeupdate` event.
+function updateOverviewWindow() {{
+  // Red rectangle on the overview showing what's currently visible in the scroller.
+  const vw = scroller.clientWidth;
+  const sl = scroller.scrollLeft;
+  const ovW = overview.clientWidth;
+  const leftPct = sl / TIMELINE_WIDTH_PX;
+  const widthPct = Math.min(1, vw / TIMELINE_WIDTH_PX);
+  overviewWindow.style.left = (leftPct * ovW) + "px";
+  overviewWindow.style.width = (widthPct * ovW) + "px";
+}}
+
+overview.addEventListener("click", (e) => {{
+  const rect = overview.getBoundingClientRect();
+  const pct = (e.clientX - rect.left) / rect.width;
+  const t = Math.max(0, Math.min(DURATION, pct * DURATION));
+  audio.currentTime = t;
+  // Center the scroller on this time
+  const targetPx = timeToPx(t);
+  scroller.scrollTo({{ left: Math.max(0, targetPx - scroller.clientWidth / 2),
+                       behavior: "smooth" }});
+}});
+
+scroller.addEventListener("scroll", updateOverviewWindow);
+
 let rafId = null;
 function rafLoop() {{ updateCursor(); rafId = requestAnimationFrame(rafLoop); }}
 function startRaf() {{ if (rafId == null) rafLoop(); }}
@@ -424,12 +625,42 @@ function stopRaf() {{
   updateCursor();
 }}
 
-window.addEventListener("load", layout);
-window.addEventListener("resize", layout);
+// Segments list — click any row to seek + scroll main view there
+document.querySelectorAll("li.seg").forEach(li => {{
+  li.addEventListener("click", () => {{
+    const t = parseFloat(li.dataset.start);
+    if (!isFinite(t)) return;
+    audio.currentTime = t;
+    audio.play();
+    const targetPx = timeToPx(t);
+    scroller.scrollTo({{ left: Math.max(0, targetPx - scroller.clientWidth / 2),
+                         behavior: "smooth" }});
+  }});
+}});
+
+// Highlight the segment currently being played
+function updateActiveSegment() {{
+  const t = audio.currentTime;
+  document.querySelectorAll("li.seg").forEach(li => {{
+    const s = parseFloat(li.dataset.start);
+    li.classList.remove("active");
+  }});
+  // Find segment containing current time — linear scan; N is small enough
+  let activeEl = null;
+  document.querySelectorAll("li.seg").forEach(li => {{
+    const s = parseFloat(li.dataset.start);
+    if (s <= t) activeEl = li;
+  }});
+  if (activeEl) activeEl.classList.add("active");
+}}
+
+window.addEventListener("load", () => {{ layout(); updateOverviewWindow(); }});
+window.addEventListener("resize", () => {{ layout(); updateOverviewWindow(); }});
 audio.addEventListener("play", startRaf);
 audio.addEventListener("pause", stopRaf);
 audio.addEventListener("ended", stopRaf);
-audio.addEventListener("seeked", updateCursor);
+audio.addEventListener("seeked", () => {{ updateCursor(); updateActiveSegment(); }});
+audio.addEventListener("timeupdate", updateActiveSegment);
 audio.addEventListener("loadedmetadata", updateCursor);
 </script>
 
@@ -489,9 +720,32 @@ def build_viewer(
             json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-    figure_png = out_dir / "viewer_figure.png"
-    figsize = _build_figure(data, audio_copy, figure_png)
+    # Clear old tile PNGs so stale tiles from a previous (different)
+    # duration don't leak into the new run.
+    for stale in out_dir.glob("tile_*.png"):
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+
+    print("[viewer] rendering tiles ...", file=sys.stderr)
+    tiles = _build_tiles(data, audio_copy, out_dir)
+
+    print("[viewer] rendering overview ...", file=sys.stderr)
+    sr, samples = _load_audio_mono_16k(audio_copy)
+    flat_words = []
+    for seg in data["segments"]:
+        flat_words.extend(seg.get("words", []))
+    overview_png = out_dir / "overview.png"
+    overview_size = _render_overview(
+        samples, sr, data.get("duration", 1.0) or 1.0,
+        flat_words, overview_png,
+    )
 
     index_html = out_dir / "index.html"
-    _build_html(data, audio_copy.name, figure_png.name, figsize, index_html)
+    _build_html(
+        data, audio_copy.name, tiles,
+        overview_png.name, overview_size,
+        index_html,
+    )
     return index_html
