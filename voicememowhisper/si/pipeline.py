@@ -409,11 +409,16 @@ def run(
         merged_obj = mod_merge.merge(
             transcript_obj, diar_obj, identification_obj, pipeline_name=pipeline_name,
         )
+        from . import silence_detect as mod_silence
+        silenced = mod_silence.detect_silence_speakers(audio_path, merged_obj)
         merged_obj.to_json(merged_path)
         elapsed = time.monotonic() - t0
         groups = mod_render.group_consecutive(merged_obj.segments)
         print(f"{_stage_header(4,'merge')} done: {len(merged_obj.segments)} segments → "
               f"{len(groups)} speaker blocks, {_human_duration(elapsed)}")
+        for lbl, lbl_db, baseline_db in silenced:
+            print(f"{_stage_header(4,'merge')} silence relabel: {lbl} "
+                  f"({lbl_db:.1f} dBFS vs baseline {baseline_db:.1f} dBFS) → [静音]")
         if merged_obj.unresolved_labels:
             print(f"{_stage_header(4,'merge')} unresolved: {merged_obj.unresolved_labels}")
         print()
