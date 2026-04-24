@@ -54,6 +54,73 @@ def test_state_store_updates_existing_row(tmp_path: Path) -> None:
         store.close()
 
 
+def test_find_by_archived_basename_single_match(tmp_path: Path) -> None:
+    db = tmp_path / "state.sqlite"
+    store = StateStore(db)
+    try:
+        old_archive = Path("/old/VoiceMemoArchives/2024-08-15_10-42-46_sample.m4a")
+        store.mark_processed("g1", tmp_path / "t.txt", old_archive)
+        matches = store.find_by_archived_basename("2024-08-15_10-42-46_sample.m4a")
+        assert matches == [("g1", old_archive)]
+        assert store.find_by_archived_basename("nope.m4a") == []
+    finally:
+        store.close()
+
+
+def test_find_by_archived_basename_multiple_matches(tmp_path: Path) -> None:
+    """When two rows happen to share a basename, both are returned — caller
+    decides what to do (the service layer refuses to self-heal ambiguous cases)."""
+    db = tmp_path / "state.sqlite"
+    store = StateStore(db)
+    try:
+        p1 = Path("/a/dup.m4a")
+        p2 = Path("/b/dup.m4a")
+        store.mark_processed("g1", tmp_path / "t1.txt", p1)
+        store.mark_processed("g2", tmp_path / "t2.txt", p2)
+        matches = store.find_by_archived_basename("dup.m4a")
+        assert sorted(matches) == sorted([("g1", p1), ("g2", p2)])
+    finally:
+        store.close()
+
+
+def test_find_by_archived_basename_skips_null_archive(tmp_path: Path) -> None:
+    """Rows with NULL archived_path (transcribed-only) must not appear."""
+    db = tmp_path / "state.sqlite"
+    store = StateStore(db)
+    try:
+        store.mark_processed("g1", tmp_path / "t.txt", archived_path=None)
+        assert store.find_by_archived_basename("whatever.m4a") == []
+    finally:
+        store.close()
+
+
+def test_update_archived_path_rewrites_row(tmp_path: Path) -> None:
+    db = tmp_path / "state.sqlite"
+    store = StateStore(db)
+    try:
+        old = Path("/old/VoiceMemoArchives/x.m4a")
+        new = Path("/new/VoiceMemoWhisper/Audio/x.m4a")
+        store.mark_processed("g1", tmp_path / "t.txt", old)
+        assert store.update_archived_path("g1", new) == 1
+
+        _, archived = store.get_state("g1")
+        assert archived == new
+        # The old path must no longer be findable.
+        assert store.has_archived_path(old) is False
+        assert store.has_archived_path(new) is True
+    finally:
+        store.close()
+
+
+def test_update_archived_path_missing_guid_is_noop(tmp_path: Path) -> None:
+    db = tmp_path / "state.sqlite"
+    store = StateStore(db)
+    try:
+        assert store.update_archived_path("ghost", tmp_path / "x.m4a") == 0
+    finally:
+        store.close()
+
+
 def test_state_store_migrates_missing_columns(tmp_path: Path) -> None:
     """
     Create an "old" schema (no archived_path/title/duration/created_at), then ensure

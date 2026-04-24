@@ -87,6 +87,39 @@ class StateStore:
             )
             return cursor.fetchone() is not None
 
+    def find_by_archived_basename(self, basename: str) -> list[tuple[str, Path]]:
+        """Return (guid, archived_path) pairs whose stored path has the given basename.
+
+        Used for self-healing when the archive directory is renamed or moved:
+        the old absolute path in state DB no longer matches the current file's
+        path, but the filename itself is still unique, so we can re-link the
+        record to the new location. Scans all rows (table is small); avoids
+        SQL LIKE with its escaping pitfalls.
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT guid, archived_path FROM processed WHERE archived_path IS NOT NULL;"
+            )
+            return [
+                (guid, Path(ap))
+                for (guid, ap) in cursor.fetchall()
+                if ap and Path(ap).name == basename
+            ]
+
+    def update_archived_path(self, guid: str, new_archived_path: Path) -> int:
+        """Update the archived_path for a given guid. Returns rows updated (0 or 1)."""
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                UPDATE processed
+                SET archived_path = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE guid = ?
+                """,
+                (str(new_archived_path), guid),
+            )
+            self._conn.commit()
+            return int(cursor.rowcount or 0)
+
     def set_duration_for_archived_path(self, archived_path: Path, duration: float) -> int:
         """
         Best-effort backfill for duration when we can probe it from the audio file.

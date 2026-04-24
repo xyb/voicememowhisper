@@ -74,6 +74,20 @@ class FakeState:
                 return True
         return False
 
+    def find_by_archived_basename(self, basename: str) -> list[tuple[str, Path]]:
+        return [
+            (guid, archived)
+            for guid, (_transcript, archived) in self.data.items()
+            if archived is not None and archived.name == basename
+        ]
+
+    def update_archived_path(self, guid: str, new_archived_path: Path) -> int:
+        if guid not in self.data:
+            return 0
+        transcript, _ = self.data[guid]
+        self.data[guid] = (transcript, new_archived_path)
+        return 1
+
     def mark_processed(
         self,
         guid: str,

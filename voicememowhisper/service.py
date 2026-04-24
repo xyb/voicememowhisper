@@ -306,6 +306,35 @@ class VoiceMemoService:
             except AttributeError:
                 # Backward compatible with older StateStore implementations.
                 pass
+
+            # Self-heal: exact path didn't match, but maybe the archive directory
+            # was renamed / moved. Look up by basename; if there's exactly one
+            # stale row, update its archived_path to the current location and
+            # treat the file as already processed. Skip healing on basename
+            # collision (rare; better to let the file fall through than to
+            # rewrite the wrong row).
+            try:
+                matches = self.state.find_by_archived_basename(path.name)
+            except AttributeError:
+                matches = []
+            if len(matches) == 1:
+                stale_guid, stale_path = matches[0]
+                if stale_path != path:
+                    try:
+                        self.state.update_archived_path(stale_guid, path)
+                        LOGGER.info(
+                            "Healed stale archived_path for %s: %s → %s",
+                            stale_guid, stale_path, path,
+                        )
+                    except AttributeError:
+                        pass
+                continue
+            elif len(matches) > 1:
+                LOGGER.warning(
+                    "Cannot self-heal %s: basename matches %d rows in state DB",
+                    path.name, len(matches),
+                )
+
             guid = path.stem
             transcript_path, _archived_path = self.state.get_state(guid)
             if transcript_path:

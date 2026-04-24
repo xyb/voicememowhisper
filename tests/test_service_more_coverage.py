@@ -142,3 +142,135 @@ def test_scan_archive_attribute_error_branch(tmp_path: Path, monkeypatch) -> Non
     audio = settings.archive_dir / "2026-01-01_00-00-00_example.m4a"  # type: ignore[operator]
     audio.write_text("x")
     service._scan_archive_for_untranscribed()
+
+
+class _HealingState:
+    """In-memory state with the 3 methods needed for scan self-heal."""
+
+    def __init__(self, seed: dict[str, tuple[Path | None, Path | None]] | None = None) -> None:
+        self.data: dict[str, tuple[Path | None, Path | None]] = dict(seed or {})
+        self.enqueued: list[Path] = []
+
+    def __call__(self, _p: Path) -> "_HealingState":
+        # Used as StateStore factory (monkeypatched class).
+        return self
+
+    def get_state(self, guid: str):
+        return self.data.get(guid, (None, None))
+
+    def has_archived_path(self, archived_path: Path) -> bool:
+        return any(a == archived_path for (_t, a) in self.data.values())
+
+    def find_by_archived_basename(self, basename: str) -> list[tuple[str, Path]]:
+        return [
+            (guid, a)
+            for guid, (_t, a) in self.data.items()
+            if a is not None and a.name == basename
+        ]
+
+    def update_archived_path(self, guid: str, new_path: Path) -> int:
+        if guid not in self.data:
+            return 0
+        t, _ = self.data[guid]
+        self.data[guid] = (t, new_path)
+        return 1
+
+    def close(self):
+        return
+
+
+def _make_service_with_state(settings, state, monkeypatch):
+    monkeypatch.setattr(svc, "WhisperTranscriber", lambda _s: object())
+    monkeypatch.setattr(svc, "load_voice_memos", lambda _settings: {})
+    monkeypatch.setattr(svc, "StateStore", state)
+    service = svc.VoiceMemoService(settings)
+    monkeypatch.setattr(service, "enqueue_path", lambda p: state.enqueued.append(p))
+    return service
+
+
+def test_scan_archive_heals_stale_path_same_basename(tmp_path: Path, monkeypatch) -> None:
+    """Archive dir was moved: state DB still points to old path, but the file
+    with the same basename exists in the new archive_dir. Scan should update
+    the state row to the new path and NOT enqueue."""
+    settings = _base_settings(tmp_path)
+    settings = replace(settings, archive_enabled=True)
+
+    new_path = settings.archive_dir / "2024-08-15_10-42-46_sample_meeting.m4a"
+    new_path.write_text("x")
+    stale_path = Path("/old/VoiceMemoArchives/2024-08-15_10-42-46_sample_meeting.m4a")
+    state = _HealingState({
+        "apple-uuid-1": (tmp_path / "old-t.txt", stale_path),
+    })
+
+    service = _make_service_with_state(settings, state, monkeypatch)
+    service._scan_archive_for_untranscribed()
+
+    # Healed: archived_path rewritten to new path
+    _, archived = state.get_state("apple-uuid-1")
+    assert archived == new_path
+    # Not enqueued (treated as already processed)
+    assert state.enqueued == []
+
+
+def test_scan_archive_does_not_heal_on_basename_collision(tmp_path: Path, monkeypatch) -> None:
+    """Two stale rows happen to share a basename — refuse to self-heal,
+    fall through to normal enqueue path (safer to reprocess than to rewrite
+    the wrong row)."""
+    settings = _base_settings(tmp_path)
+    settings = replace(settings, archive_enabled=True)
+
+    new_path = settings.archive_dir / "dup.m4a"
+    new_path.write_text("x")
+    state = _HealingState({
+        "g1": (tmp_path / "t1.txt", Path("/a/dup.m4a")),
+        "g2": (tmp_path / "t2.txt", Path("/b/dup.m4a")),
+    })
+
+    service = _make_service_with_state(settings, state, monkeypatch)
+    service._scan_archive_for_untranscribed()
+
+    # Neither row was rewritten
+    assert state.get_state("g1")[1] == Path("/a/dup.m4a")
+    assert state.get_state("g2")[1] == Path("/b/dup.m4a")
+    # File falls through; stem "dup" isn't a known guid so enqueue is called
+    assert state.enqueued == [new_path]
+
+
+def test_scan_archive_new_file_still_enqueues(tmp_path: Path, monkeypatch) -> None:
+    """Truly new archive file (no state row matches either by path or basename)
+    must still be enqueued."""
+    settings = _base_settings(tmp_path)
+    settings = replace(settings, archive_enabled=True)
+
+    new_path = settings.archive_dir / "2026-05-01_10-00-00_brand_new.m4a"
+    new_path.write_text("x")
+    state = _HealingState({})
+
+    service = _make_service_with_state(settings, state, monkeypatch)
+    service._scan_archive_for_untranscribed()
+
+    assert state.enqueued == [new_path]
+
+
+def test_scan_archive_exact_path_match_does_not_trigger_heal(tmp_path: Path, monkeypatch) -> None:
+    """When the state row already points to the correct current path, do not
+    call update_archived_path / do not log a heal."""
+    settings = _base_settings(tmp_path)
+    settings = replace(settings, archive_enabled=True)
+
+    new_path = settings.archive_dir / "already-tracked.m4a"
+    new_path.write_text("x")
+    state = _HealingState({"g1": (tmp_path / "t.txt", new_path)})
+    # Sentinel: if update_archived_path is called, fail the test.
+    called = []
+    orig = state.update_archived_path
+    def _spy(guid, path):
+        called.append((guid, path))
+        return orig(guid, path)
+    state.update_archived_path = _spy  # type: ignore[assignment]
+
+    service = _make_service_with_state(settings, state, monkeypatch)
+    service._scan_archive_for_untranscribed()
+
+    assert called == []
+    assert state.enqueued == []
