@@ -212,6 +212,14 @@ class VoiceMemoService:
 
         needs_archiving = self.settings.archive_enabled and archived_path is None and not is_already_archived
 
+        # `guid` here is `path.stem` only — for Voice Memos source files that
+        # is the recording timestamp (e.g. `YYYYMMDD HHMMSS`), not the real
+        # `ZUNIQUEID` from CloudRecordings.db. So a missing state row at this
+        # point doesn't actually mean "untranscribed"; the metadata-resolved
+        # GUID inside `processor.process()` may still hit a state row that
+        # this check can't see. Treat the per-stem fast-skip as best-effort
+        # and let processor.process() (which has the right guid) make the
+        # final call — including detecting incomplete speaker-pipeline runs.
         if not needs_transcription and not needs_archiving:
             return
 
@@ -348,6 +356,24 @@ class VoiceMemoService:
             # archive copy is now the only evidence and a fresh transcription
             # would produce a duplicate next to the existing transcript.
             existing_transcript = self.settings.transcript_dir / f"{path.stem}.txt"
+            # Fallback: when the user manually renamed the transcript (a
+            # common pattern: m4a archive uses the file's *creation* date
+            # but the user re-prefixed the .txt to the title's *subject*
+            # date — e.g. an old recording re-imported years later keeps
+            # the original date in its title), the m4a-stem direct match
+            # fails. Look for any `.txt` whose **title portion** (after the
+            # canonical `YYYY-MM-DD_HH-MM-SS_` prefix) equals the m4a's
+            # title portion. Treat that as the paired transcript so we
+            # don't re-transcribe a deleted memo.
+            if not existing_transcript.exists():
+                fuzzy = self._find_transcript_by_title(path.stem)
+                if fuzzy is not None:
+                    existing_transcript = fuzzy
+                    LOGGER.info(
+                        "Found transcript for %s by title match: %s",
+                        path.name, fuzzy.name,
+                        extra={"verbosity": 1},
+                    )
             if existing_transcript.exists():
                 memo = self._memo_for_path(path)
                 created_at = resolve_created_at(memo)
@@ -367,6 +393,43 @@ class VoiceMemoService:
                 continue
 
             self.enqueue_path(path)
+
+    @staticmethod
+    def _title_from_canonical_stem(stem: str) -> str:
+        """Strip a leading ``YYYY-MM-DD_HH-MM-SS_`` from the canonical archive
+        stem, returning the title segment. Falls back to the full stem when
+        no timestamp prefix is present."""
+        import re
+        m = re.match(r"^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_(.*)$", stem)
+        return m.group(1) if m else stem
+
+    def _find_transcript_by_title(self, m4a_stem: str) -> Optional[Path]:
+        """Locate a `.txt` in transcript_dir whose canonical title segment
+        matches the m4a's. Returns None on no-match or on ambiguity (more
+        than one .txt has the same title — better to skip than to relink
+        the wrong file)."""
+        try:
+            target_title = self._title_from_canonical_stem(m4a_stem)
+            if not target_title or target_title == m4a_stem:
+                # No canonical timestamp prefix → can't safely fuzzy-match.
+                return None
+            try:
+                candidates = list(self.settings.transcript_dir.glob("*.txt"))
+            except OSError:
+                return None
+            matches = [
+                p for p in candidates
+                if self._title_from_canonical_stem(p.stem) == target_title
+            ]
+            if len(matches) == 1:
+                return matches[0]
+            return None
+        except Exception as err:
+            LOGGER.debug(
+                "Title-based transcript lookup failed for %s: %s",
+                m4a_stem, err, extra={"verbosity": 2},
+            )
+            return None
 
     def _handle_inbox_file(self, path: Path) -> None:
         """Handle a new file detected in Inbox directory."""

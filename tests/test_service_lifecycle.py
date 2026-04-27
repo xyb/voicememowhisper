@@ -10,7 +10,7 @@ import pytest
 
 def test_service_start_join_stop_processes_backlog(service_factory, settings) -> None:
     audio = settings.recordings_dir / "foo.m4a"
-    audio.write_text("audio")
+    audio.write_bytes(b"audio" + b"\0" * 1024)  # > _MIN_VALID_M4A_SIZE
 
     service = service_factory(settings)
     service.start(watch=False)

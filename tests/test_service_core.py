@@ -15,7 +15,7 @@ from voicememowhisper.paths import ensure_directories
 
 def test_process_memo_transcribes_and_archives_and_marks_state(service, settings) -> None:
     audio = settings.recordings_dir / "foo.m4a"
-    audio.write_text("audio")
+    audio.write_bytes(b"audio" + b"\0" * 1024)  # > _MIN_VALID_M4A_SIZE
     mtime = 1_700_000_000  # deterministic timestamp
     os.utime(audio, (mtime, mtime))
 
@@ -37,7 +37,7 @@ def test_process_memo_transcribes_and_archives_and_marks_state(service, settings
 
 def test_transcript_filename_uses_stem_title_part_when_timestamped(service, settings) -> None:
     audio = settings.recordings_dir / "2026-01-26_15-30-03_2026-01-26 Interview_Test.m4a"
-    audio.write_text("audio")
+    audio.write_bytes(b"audio" + b"\0" * 1024)  # > _MIN_VALID_M4A_SIZE
 
     created_at = datetime(2026, 1, 26, 15, 30, 3)
     memo = VoiceMemo(guid=audio.stem, path=audio, created_at=created_at)
@@ -51,7 +51,7 @@ def test_transcript_filename_uses_stem_title_part_when_timestamped(service, sett
 
 def test_enqueue_path_skips_when_transcript_already_present(service, settings) -> None:
     audio = settings.recordings_dir / "bar.m4a"
-    audio.write_text("audio")
+    audio.write_bytes(b"audio" + b"\0" * 1024)  # > _MIN_VALID_M4A_SIZE
     # Pre-mark transcript
     service.state.data["bar"] = (settings.transcript_dir / "bar.txt", settings.archive_dir / "bar.m4a")  # type: ignore[union-attr]
 
@@ -62,7 +62,7 @@ def test_enqueue_path_skips_when_transcript_already_present(service, settings) -
 
 def test_enqueue_path_for_archive_file_does_not_duplicate_archive(service, settings) -> None:
     archived = settings.archive_dir / "archived.m4a"  # type: ignore[operator]
-    archived.write_text("audio")
+    archived.write_bytes(b"audio" + b"\0" * 1024)  # > _MIN_VALID_M4A_SIZE
 
     service.enqueue_path(archived)
     queued = service._queue.get(timeout=1)
@@ -72,7 +72,7 @@ def test_enqueue_path_for_archive_file_does_not_duplicate_archive(service, setti
 
 def test_scan_archive_backfills_untranscribed(service, settings) -> None:
     archived = settings.archive_dir / "needs.m4a"  # type: ignore[operator]
-    archived.write_text("audio")
+    archived.write_bytes(b"audio" + b"\0" * 1024)  # > _MIN_VALID_M4A_SIZE
 
     service._scan_archive_for_untranscribed()
     queued = service._queue.get(timeout=1)
@@ -89,7 +89,7 @@ def test_scan_archive_self_heals_when_transcript_exists_but_state_row_missing(se
     Re-transcribing wastes CPU and produces a duplicate transcript.
     """
     archived = settings.archive_dir / "ghost.m4a"  # type: ignore[operator]
-    archived.write_text("audio")
+    archived.write_bytes(b"audio" + b"\0" * 1024)  # > _MIN_VALID_M4A_SIZE
     transcript = settings.transcript_dir / "ghost.txt"
     transcript.write_text("hello\n")
 
@@ -106,7 +106,7 @@ def test_scan_archive_self_heals_when_transcript_exists_but_state_row_missing(se
 
 def test_scan_archive_does_not_reprocess_files_already_archived_in_state(service, settings) -> None:
     audio = settings.recordings_dir / "foo.m4a"
-    audio.write_text("audio")
+    audio.write_bytes(b"audio" + b"\0" * 1024)  # > _MIN_VALID_M4A_SIZE
     mtime = 1_700_000_000  # deterministic timestamp
     os.utime(audio, (mtime, mtime))
 

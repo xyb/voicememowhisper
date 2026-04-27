@@ -106,6 +106,29 @@ class StateStore:
                 if ap and Path(ap).name == basename
             ]
 
+    def clear_transcript_path(self, guid: str) -> int:
+        """Clear the transcript_path for a guid so the next processing pass
+        treats it as needing transcription. Used by the main flow when it
+        detects an incomplete speaker-pipeline run (ASR cache exists but no
+        `.md` was rendered) and wants to re-run from cache. Keeps the
+        archived_path / title / duration intact. Returns rows updated.
+
+        SQLite's NOT NULL constraint on transcript_path forces an empty
+        string sentinel rather than a real NULL — `get_state()` already
+        treats falsy values as None.
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                UPDATE processed
+                SET transcript_path = '', updated_at = CURRENT_TIMESTAMP
+                WHERE guid = ?
+                """,
+                (guid,),
+            )
+            self._conn.commit()
+            return int(cursor.rowcount or 0)
+
     def update_archived_path(self, guid: str, new_archived_path: Path) -> int:
         """Update the archived_path for a given guid. Returns rows updated (0 or 1)."""
         with self._lock:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 import shutil
@@ -39,6 +40,57 @@ class _VerbosityFilter(logging.Filter):
         return self._verbosity >= int(required)
 
 
+def _default_log_dir() -> Path:
+    """Where rotated log files live. Override with ``VOICE_MEMO_LOG_DIR``."""
+    override = os.environ.get("VOICE_MEMO_LOG_DIR")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".local" / "state" / "voicememowhisper" / "logs"
+
+
+def _setup_file_logging(log_dir: Path) -> Path | None:
+    """Attach a daily-rotating file handler to the root logger that captures
+    everything at DEBUG level — independent of CLI ``-v`` verbosity. Returns
+    the active log file path (or None on failure). Goal: "looks fine on
+    stdout but actually crashed" issues (e.g. backend HTTP failures that
+    fall back to a local model and silently emit a degraded transcript)
+    stay debuggable after the fact without rerunning.
+    """
+    import logging.handlers as _lh
+
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+
+    log_path = log_dir / "voicememowhisper.log"
+    try:
+        handler = _lh.TimedRotatingFileHandler(
+            str(log_path),
+            when="midnight",
+            interval=1,
+            backupCount=14,
+            encoding="utf-8",
+            utc=False,
+            delay=False,
+        )
+    except OSError:
+        return None
+
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(
+        logging.Formatter(
+            # More detail than stdout: full timestamp + ms + logger name +
+            # source location (file:line) for fast jump-to-source.
+            "%(asctime)s.%(msecs)03d %(levelname)-7s [%(name)s] "
+            "%(filename)s:%(lineno)d %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
+    logging.getLogger().addHandler(handler)
+    return log_path
+
+
 def _configure_logging(level: str, verbosity: int) -> None:
     # Force line-buffered stdout/stderr so log lines flush immediately even
     # when redirected to a file (`> run.log 2>&1`). Without this, Python uses
@@ -70,6 +122,12 @@ def _configure_logging(level: str, verbosity: int) -> None:
                 except Exception:
                     pass
             handler.emit = _flushing_emit  # type: ignore[assignment]
+
+    log_path = _setup_file_logging(_default_log_dir())
+    if log_path is not None:
+        # Make the file path visible up front so users (and AI assistants
+        # debugging an issue) know where to look without grepping the source.
+        logging.info("Detailed log file: %s", log_path, extra={"verbosity": 1})
 
 
 def build_settings(args: argparse.Namespace) -> Settings:
@@ -185,7 +243,40 @@ def _list_recordings(settings: Settings, *, limit: int = 10) -> int:
     return 0
 
 
+def _unset_proxy_env() -> None:
+    """Force every backend HTTP request to bypass any system / shell proxy.
+
+    The ASR + diarize HTTP backends are typically reachable directly (LAN /
+    VPN / private hostname) and must not be routed through an outbound
+    HTTP proxy. A leaked ``http_proxy`` from the user's shell session,
+    **or** the macOS system proxy (which ``urllib.getproxies()`` picks up
+    via SystemConfiguration even when env vars are clean), causes the
+    proxy to CONNECT-tunnel the request and the inner TLS handshake gets
+    torn down (LibreSSL ``SSL_ERROR_SYSCALL`` / ``Broken pipe``) — the
+    pipeline then silently falls back to the local model and ships a
+    ``.txt`` with no ``.md``.
+
+    Two-step fix:
+      1. Drop ``*_proxy`` env vars (covers shell-leaked proxy).
+      2. Set ``no_proxy=*`` / ``NO_PROXY=*`` so urllib's
+         ``getproxies_macosx_sysconf()`` lookup returns no proxy
+         regardless of what System Settings → Network → Proxies says.
+    Done unconditionally on every invocation so the user doesn't need to
+    remember a prefix.
+    """
+    for var in (
+        "http_proxy", "https_proxy", "all_proxy",
+        "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+    ):
+        os.environ.pop(var, None)
+    # urllib + requests both honour `no_proxy=*` as "bypass for everything".
+    os.environ["no_proxy"] = "*"
+    os.environ["NO_PROXY"] = "*"
+
+
 def main(argv: list[str] | None = None) -> int:
+    _unset_proxy_env()
+
     # Route the `si` subcommand group to the speaker-id CLI before argparse
     # touches the rest of the args. Keeping it as a pre-dispatch (rather than
     # a subparser) means existing flat flags (`--watch`, `-l`, ...) keep
