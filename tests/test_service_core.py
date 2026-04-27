@@ -80,6 +80,30 @@ def test_scan_archive_backfills_untranscribed(service, settings) -> None:
     assert "needs" in service._inflight
 
 
+def test_scan_archive_self_heals_when_transcript_exists_but_state_row_missing(service, settings) -> None:
+    """Archive + matching transcript on disk, no state row.
+
+    Mirrors the case where a Voice Memo was deleted from the app and the
+    state DB row was lost (manual edit, restore from backup, corruption).
+    The archive copy is still in place, and so is the original transcript.
+    Re-transcribing wastes CPU and produces a duplicate transcript.
+    """
+    archived = settings.archive_dir / "ghost.m4a"  # type: ignore[operator]
+    archived.write_text("audio")
+    transcript = settings.transcript_dir / "ghost.txt"
+    transcript.write_text("hello\n")
+
+    service._scan_archive_for_untranscribed()
+
+    with pytest.raises(queue.Empty):
+        service._queue.get_nowait()
+    assert "ghost" not in service._inflight
+
+    transcript_path, archived_path = service.state.get_state("ghost")
+    assert transcript_path == transcript
+    assert archived_path == archived
+
+
 def test_scan_archive_does_not_reprocess_files_already_archived_in_state(service, settings) -> None:
     audio = settings.recordings_dir / "foo.m4a"
     audio.write_text("audio")

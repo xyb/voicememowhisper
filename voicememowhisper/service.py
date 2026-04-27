@@ -339,6 +339,33 @@ class VoiceMemoService:
             transcript_path, _archived_path = self.state.get_state(guid)
             if transcript_path:
                 continue
+
+            # Self-heal: if a transcript with the same stem already exists on
+            # disk, the file was previously transcribed but the state DB row
+            # was lost (manual edit, corruption, restore from backup). Re-link
+            # instead of re-running Whisper — important for archives whose
+            # source memo was deleted from the Voice Memos app, since the
+            # archive copy is now the only evidence and a fresh transcription
+            # would produce a duplicate next to the existing transcript.
+            existing_transcript = self.settings.transcript_dir / f"{path.stem}.txt"
+            if existing_transcript.exists():
+                memo = self._memo_for_path(path)
+                created_at = resolve_created_at(memo)
+                created_at_str = created_at.isoformat() if created_at else None
+                self.state.mark_processed(
+                    guid=guid,
+                    transcript_path=existing_transcript,
+                    archived_path=path,
+                    title=memo.title,
+                    duration=memo.duration_seconds,
+                    created_at=created_at_str,
+                )
+                LOGGER.info(
+                    "Re-linked existing transcript for %s (state DB row missing)",
+                    path.name,
+                )
+                continue
+
             self.enqueue_path(path)
 
     def _handle_inbox_file(self, path: Path) -> None:
