@@ -104,6 +104,7 @@ def run(
     diarize_backend_config: dict | None = None,
     archive_dir: Path | None = None,
     archive: bool = True,
+    transcript_stem: str | None = None,
 ) -> Path | None:
     """Run the speaker-id pipeline.
 
@@ -252,13 +253,15 @@ def run(
             # Per-backend language default: config override > pipeline-level language.
             cfg_dict.setdefault("language", language)
             cfg = mod_openai_audio.OpenAIAudioConfig(**cfg_dict)
+            from .progress import HeartbeatThread
             with StageProgress(
                 "transcribe", stage_num=1, total_stages=len(STEPS),
             ) as prog:
                 prog.note(f"backend=openai-audio model={cfg.model} url={cfg.url}")
-                transcript_obj, raw_info = mod_openai_audio.transcribe(
-                    audio_path, cfg
-                )
+                with HeartbeatThread(prog, label="transcribe in flight"):
+                    transcript_obj, raw_info = mod_openai_audio.transcribe(
+                        audio_path, cfg
+                    )
                 transcript_obj.to_json(transcript_path)
                 prog.note(
                     f"{len(transcript_obj.segments)} segments in "
@@ -320,13 +323,15 @@ def run(
                     "with at least 'url'"
                 )
             cfg = mod_diarize_http.DiarizeHTTPConfig(**cfg_dict)
+            from .progress import HeartbeatThread
             with StageProgress(
                 "diarize", stage_num=2, total_stages=len(STEPS),
             ) as prog:
                 prog.note(f"backend=http url={cfg.url}")
-                diar_obj, duration_sec, _labels = mod_diarize_http.run_diarization(
-                    audio_path, cfg, embeddings_out_path=embeddings_path,
-                )
+                with HeartbeatThread(prog, label="diarize in flight"):
+                    diar_obj, duration_sec, _labels = mod_diarize_http.run_diarization(
+                        audio_path, cfg, embeddings_out_path=embeddings_path,
+                    )
                 diar_obj.to_json(diarization_path)
                 if duration_sec and transcript_obj is not None and transcript_obj.duration_sec == 0:
                     transcript_obj.duration_sec = duration_sec
@@ -449,15 +454,21 @@ def run(
 
         if output_transcript_dir:
             # Decouple the user-facing copy name from the cache key. For
-            # fresh runs they match (audio.stem == recording_id). For
+            # fresh runs without an explicit transcript_stem, copy uses
+            # audio.stem (matches the audio file the vault links to). For
             # re-runs against an archived file via --recording-id, the
-            # cache key stays put but the copy uses the audio's current
-            # stem — which is the canonical vault filename in practice.
-            # This avoids the manual `mv <cache-key>.md <canonical>.md`
-            # step after every --recording-id re-render.
+            # cache key stays put but the copy still uses audio.stem —
+            # which is the canonical vault filename in practice. This
+            # avoids the manual `mv <cache-key>.md <canonical>.md` step
+            # after every --recording-id re-render.
+            #
+            # Watcher-driven runs override audio.stem (raw recorder system
+            # stem) with the canonical "YYYY-MM-DD_HH-MM-SS_<title>" via
+            # ``transcript_stem`` so the vault copy lands with a meaningful
+            # name in one shot, no post-pipeline rename hop.
             output_transcript_dir = Path(output_transcript_dir)
             output_transcript_dir.mkdir(parents=True, exist_ok=True)
-            copy_stem = audio_path.stem
+            copy_stem = transcript_stem or audio_path.stem
             target_md = output_transcript_dir / f"{copy_stem}.md"
             target_txt = output_transcript_dir / f"{copy_stem}.txt"
             shutil.copy2(md_path, target_md)

@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from .archive import ArchiveManager
+from .archive import ArchiveManager, resolve_conflict_path
 from .config import Settings
 from .metadata import VoiceMemo, resolve_created_at
 from .metadata_cache import MetadataCache
@@ -108,18 +108,43 @@ class MemoProcessor:
                 if size == 0:
                     raise OSError("File size is zero while recording may still be in progress.")
                 if size < self._MIN_VALID_M4A_SIZE:
-                    LOGGER.warning(
-                        "Skipping %s: %d bytes is below the %d-byte threshold "
-                        "for a valid m4a — likely a corrupt placeholder, not "
-                        "a recording. Delete the file or replace with the real audio.",
-                        path.name, size, self._MIN_VALID_M4A_SIZE,
-                    )
+                    self._quarantine_corrupt(path, size)
                     return False
                 return True
             except OSError as err:
                 LOGGER.debug("Memo %s not ready (%s). Retrying...", path.name, err, extra={"verbosity": 2})
                 time.sleep(1.0)
         return False
+
+    def _quarantine_corrupt(self, path: Path, size: int) -> None:
+        """Move a sub-threshold m4a out of the active scan path.
+
+        Without this, every watcher restart re-scans the file, fails the
+        size check, and emits the same WARNING + "Giving up" ERROR pair
+        forever. Move it to ``<archive_dir>/_corrupt/`` so a human can
+        inspect or delete it later, and the live workflow stops bumping
+        into it. If no archive_dir is configured, fall back to the file's
+        own ``_corrupt/`` sibling so we still get the file out of the way.
+        """
+        import shutil
+        archive_dir = self.settings.archive_dir
+        quarantine_dir = (archive_dir / "_corrupt") if archive_dir else (path.parent / "_corrupt")
+        try:
+            quarantine_dir.mkdir(parents=True, exist_ok=True)
+            target = quarantine_dir / path.name
+            if target.exists():
+                target = resolve_conflict_path(target)
+            shutil.move(str(path), str(target))
+            LOGGER.warning(
+                "Quarantined corrupt placeholder %s (%d bytes < %d) → %s",
+                path.name, size, self._MIN_VALID_M4A_SIZE, target,
+            )
+        except OSError as err:
+            LOGGER.error(
+                "Failed to quarantine corrupt %s (%d bytes): %s — "
+                "delete it manually to stop this error.",
+                path.name, size, err,
+            )
 
     def process(self, memo: VoiceMemo) -> None:
         path = memo.path
@@ -129,7 +154,11 @@ class MemoProcessor:
             return
 
         if not self.ensure_file_ready(path):
-            LOGGER.error("Giving up on %s after repeated readiness checks", display)
+            # The corrupt-placeholder branch already moved the file aside
+            # (quarantine warning logged); only emit the generic "giving
+            # up" line for the genuine transient-readiness fall-through.
+            if path.exists():
+                LOGGER.error("Giving up on %s after repeated readiness checks", display)
             return
 
         # Refresh metadata and re-resolve to pick up title/trashed flags.

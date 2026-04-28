@@ -358,4 +358,60 @@ class DiarizeProgressHook:
             self._prog.update(float(completed))
 
 
-__all__ = ["StageProgress", "DiarizeProgressHook"]
+class HeartbeatThread:
+    """Periodically print a one-line "still running" beat from a daemon thread.
+
+    Wraps a long synchronous call (e.g. urlopen of a 100 MB upload to a
+    self-hosted ASR / diarize server) so users see signs of life rather
+    than a silent terminal until the response lands. The thread is a
+    daemon: when the main thread exits or raises, no need to join.
+
+    Use as a context manager::
+
+        with HeartbeatThread(progress, label="upload"):
+            response = urlopen(req, timeout=...)
+
+    ``progress`` is a ``StageProgress`` whose ``note()`` we call. ``label``
+    becomes part of the printed message so multi-step backends (encode,
+    upload, decode) can be distinguished. ``interval_s`` defaults to the
+    same throttle that StageProgress uses, so the cadence stays familiar.
+    """
+
+    def __init__(
+        self,
+        progress: "StageProgress",
+        *,
+        label: str = "still running",
+        interval_s: Optional[float] = None,
+    ) -> None:
+        import threading
+        self._prog = progress
+        self._label = label
+        self._interval = interval_s if interval_s is not None else _default_interval()
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._t0 = 0.0
+
+    def __enter__(self) -> "HeartbeatThread":
+        import threading
+        self._t0 = time.monotonic()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._interval):
+            elapsed = time.monotonic() - self._t0
+            try:
+                self._prog.note(f"{self._label} · elapsed {_fmt_duration(elapsed)}")
+            except Exception:
+                # Don't let logging hiccups in the daemon thread kill the run.
+                return
+
+
+__all__ = ["StageProgress", "DiarizeProgressHook", "HeartbeatThread"]

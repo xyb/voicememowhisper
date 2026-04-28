@@ -121,6 +121,7 @@ class SpeakerPipeline:
             output_dir=self._output_dir,
             output_transcript_dir=self.settings.transcript_dir,
             recording_id=target_stem,
+            transcript_stem=target_stem,
             # The main-flow caller has its own ArchiveManager that moves
             # the source file into Audio/ with the canonical
             # `YYYY-MM-DD_HH-MM-SS_<title>.m4a` name. Letting the pipeline's
@@ -141,32 +142,18 @@ class SpeakerPipeline:
             extra={"verbosity": 0},
         )
 
-        # Pipeline always names its copies after the audio stem; rename to
-        # the watcher's canonical stem so vault backlinks (frontmatter
-        # `transcript_file: YYYY-MM-DD_HH-MM-SS_<title>.txt`) stay valid.
+        # The pipeline now copies directly to `target_stem.{md,txt}` via
+        # `transcript_stem=target_stem` above, so no post-run rename is
+        # needed. We just need to find the resulting plain-text file.
         audio_stem = audio_path.stem
-        stem_txt = self.settings.transcript_dir / f"{audio_stem}.txt"
-        stem_md = self.settings.transcript_dir / f"{audio_stem}.md"
-        if target_stem and target_stem != audio_stem:
-            for src, ext in ((stem_txt, ".txt"), (stem_md, ".md")):
-                if src.exists():
-                    dst = self.settings.transcript_dir / f"{target_stem}{ext}"
-                    if dst.exists():
-                        dst.unlink()
-                    src.rename(dst)
-                    LOGGER.info(
-                        "Renamed %s → %s", src.name, dst.name,
-                        extra={"verbosity": 1},
-                    )
-
         final_txt = (
             self.settings.transcript_dir / f"{target_stem}.txt"
             if target_stem
-            else stem_txt
+            else self.settings.transcript_dir / f"{audio_stem}.txt"
         )
         for candidate in (
             final_txt,
-            self._output_dir / audio_stem / "transcript.txt",
+            self._output_dir / (target_stem or audio_stem) / "transcript.txt",
         ):
             if candidate.exists():
                 return candidate.read_text(encoding="utf-8").strip()
