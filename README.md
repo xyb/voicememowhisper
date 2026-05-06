@@ -144,7 +144,7 @@ Override paths or defaults via environment variables:
 - `VOICE_MEMO_LANGUAGE` – language hint.
 - `VOICE_MEMO_SPEAKER_PIPELINE` – set to `0` to disable the speaker-ID pipeline even if installed.
 - `VOICE_MEMO_SPEAKER_PIPELINE_MODEL` – faster-whisper model name (default `medium`).
-- `VOICE_MEMO_SPEAKER_PIPELINE_THRESHOLD` – cosine match threshold against the speaker library (default `0.5`).
+- `VOICE_MEMO_SPEAKER_PIPELINE_THRESHOLD` – cosine match threshold against the speaker library.
 - `VOICE_MEMO_SPEAKER_LIBRARY_DIR` – path to the speaker library.
 - `VOICE_MEMO_SPEAKER_RUNS_DIR` – stage intermediate directory.
 - `VOICE_MEMO_SPEAKER_OUTPUT_DIR` – final outputs directory.

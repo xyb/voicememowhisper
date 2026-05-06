@@ -149,7 +149,7 @@ class Settings:
     # outside the repo. Override per-deployment with the env vars below.
     speaker_pipeline_enabled: bool = os.environ.get("VOICE_MEMO_SPEAKER_PIPELINE", "1") == "1"
     speaker_pipeline_model: str = os.environ.get("VOICE_MEMO_SPEAKER_PIPELINE_MODEL", "medium")
-    speaker_pipeline_threshold: float = float(os.environ.get("VOICE_MEMO_SPEAKER_PIPELINE_THRESHOLD", "0.5"))
+    speaker_pipeline_threshold: float = float(os.environ.get("VOICE_MEMO_SPEAKER_PIPELINE_THRESHOLD", "0.55"))
     # Speaker library lives alongside Audio/ and Transcripts/ under
     # ~/Documents/VoiceMemoWhisper/ — it's the only durable, hand-curated
     # data in the pipeline (enrollment clips + profiles with evidence
