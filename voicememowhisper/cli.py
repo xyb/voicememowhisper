@@ -286,6 +286,14 @@ def main(argv: list[str] | None = None) -> int:
         from .si.cli import main as si_main
         return si_main(raw_argv[1:])
 
+    # Common typo: user types `ls` / `list` expecting a list subcommand.
+    # Map to the existing `-l` flag so it shows the listing instead of
+    # falling through to the positional `audio` path — that path enters
+    # the single-instance lock and looks "stuck" whenever a real
+    # transcribe is running in another shell.
+    if raw_argv and raw_argv[0] in {"ls", "list"}:
+        raw_argv = ["-l"] + raw_argv[1:]
+
     parser = argparse.ArgumentParser(
         description="Transcribe Apple Voice Memos with WhisperKit (default) or the speaker-id pipeline.",
         epilog=(
@@ -348,7 +356,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Process backlog newest first (disable for oldest first). Default: true.",
     )
 
-    args = parser.parse_args(argv)
+    args = parser.parse_args(raw_argv)
     _configure_logging(args.log_level, args.verbose)
 
     try:
@@ -359,6 +367,18 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.list:
         return _list_recordings(settings, limit=args.limit)
+
+    # Fail-fast on a missing audio file BEFORE acquiring the
+    # single-instance lock. A plain typo (`voicememo-whisper foo`) should
+    # not appear to "hang" on the lock when another transcribe is
+    # running; surface the error + point at `-l` while the user is still
+    # at the prompt.
+    if args.audio and not Path(args.audio).exists():
+        LOGGER.error(
+            "audio file not found: %s (did you mean `-l` to list recordings?)",
+            args.audio,
+        )
+        return 1
 
     # Long-running processing: guard against a second instance racing on
     # the same Voice Memos source / state DB / archive dir.
@@ -377,7 +397,6 @@ def main(argv: list[str] | None = None) -> int:
                 # through the same state-DB + ArchiveManager + speaker_pipeline
                 # path. This is the canonical way to (re)process one specific
                 # file — `si run` is intentionally the diagnostic-only entry.
-                from pathlib import Path
                 service.process_one(Path(args.audio))
                 service.join()
             else:
