@@ -77,6 +77,9 @@ def _build_asr_backend_kwargs(args: argparse.Namespace) -> dict:
         "asr_host_header",
         "asr_response_format",
         "asr_timeout_sec",
+        "asr_ws_url",
+        "asr_ws_idle_timeout_sec",
+        "asr_ws_connect_timeout_sec",
         "diarize_backend",
         "diarize_url",
         "diarize_api_key",
@@ -798,13 +801,16 @@ def _add_asr_backend_args(p: argparse.ArgumentParser) -> None:
     """
     p.add_argument(
         "--asr-backend", dest="asr_backend", default=None,
-        choices=["faster_whisper", "openai-audio"],
+        choices=["faster_whisper", "openai-audio", "ws-funasr", "ws_funasr"],
         help="Stage-1 transcription backend. 'openai-audio' routes to "
              "any OpenAI Audio API compatible server (OpenAI Whisper, "
              "a self-hosted FunASR slim, groq, ...) — see --asr-url / "
-             "--asr-model. Reads from ~/.config/voicememowhisper/config.toml "
-             "if present; falls back to 'faster_whisper' if neither flag "
-             "nor config sets it.",
+             "--asr-model. 'ws-funasr' streams PCM to a funasr-aipod "
+             "WebSocket endpoint (aliyun SpeechTranscriber protocol) "
+             "with idle-timer monitoring, no hard wall-clock timeout — "
+             "see --asr-ws-url. Reads from "
+             "~/.config/voicememowhisper/config.toml if present; falls "
+             "back to 'faster_whisper' if neither flag nor config sets it.",
     )
     p.add_argument("--asr-config", dest="asr_config", default=None,
                    help="Path to a TOML config file with ASR backend settings. "
@@ -826,6 +832,21 @@ def _add_asr_backend_args(p: argparse.ArgumentParser) -> None:
                    help="openai-audio response format (default: verbose_json)")
     p.add_argument("--asr-timeout-sec", dest="asr_timeout_sec", type=float, default=None,
                    help="openai-audio per-request timeout in seconds (default: 600)")
+    # ws-funasr knobs. Kept under their own --asr-ws-* namespace so they
+    # don't collide with the HTTP-backend flags above — a user with both
+    # [asr.http] and [asr.ws] in config can switch backends without the
+    # flag set conflicting.
+    p.add_argument("--asr-ws-url", dest="asr_ws_url", default=None,
+                   help="ws-funasr endpoint URL (e.g. wss://your-host/ws/v1/asr)")
+    p.add_argument("--asr-ws-idle-timeout-sec", dest="asr_ws_idle_timeout_sec",
+                   type=float, default=None,
+                   help="ws-funasr idle timeout in seconds. There is NO "
+                        "wall-clock cap — only this idle timer. Server "
+                        "sends no event for this long → assume dead. "
+                        "(default: 60)")
+    p.add_argument("--asr-ws-connect-timeout-sec", dest="asr_ws_connect_timeout_sec",
+                   type=float, default=None,
+                   help="ws-funasr WebSocket connect timeout in seconds (default: 15)")
 
 
 def _add_diarize_backend_args(p: argparse.ArgumentParser) -> None:

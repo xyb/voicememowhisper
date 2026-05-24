@@ -27,6 +27,10 @@ speaker-id = [
     # Used by `si viewer`: waveform + spectrogram PNG generation. scipy
     # is already a transitive dep of pyannote.audio so it's not listed.
     "matplotlib",
+    # ws-funasr ASR backend: synchronous WebSocket client (~100 KB).
+    # stdlib has no WebSocket client, and the async-only alternatives
+    # don't fit the rest of the codebase's sync style.
+    "websocket-client>=1.0",
 ]
 
 [project.scripts]

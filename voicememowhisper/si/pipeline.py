@@ -268,6 +268,34 @@ def run(
                     f"{raw_info['wall_clock_sec']}s, "
                     f"{_peak_rss_mb():.1f} MB RSS"
                 )
+        elif asr_backend in ("ws-funasr", "ws_funasr"):
+            # WebSocket streaming backend. Server pushes partial events
+            # back so we can rely on an idle timer instead of a wall-clock
+            # deadline — see asr_backends/ws_funasr.py for the protocol.
+            from .asr_backends import ws_funasr as mod_ws_funasr
+
+            cfg_dict = dict(asr_backend_config or {})
+            if "url" not in cfg_dict:
+                raise ValueError(
+                    "asr_backend='ws-funasr' requires asr_backend_config "
+                    "with at least 'url' (e.g. wss://your-host/ws/v1/asr)"
+                )
+            cfg = mod_ws_funasr.WsFunasrConfig(**cfg_dict)
+            with StageProgress(
+                "transcribe", stage_num=1, total_stages=len(STEPS),
+            ) as prog:
+                prog.note(f"backend=ws-funasr url={cfg.url} "
+                          f"idle_timeout_sec={cfg.idle_timeout_sec}")
+                transcript_obj, raw_info = mod_ws_funasr.transcribe(
+                    audio_path, cfg
+                )
+                transcript_obj.to_json(transcript_path)
+                prog.note(
+                    f"{len(transcript_obj.segments)} segments / "
+                    f"{raw_info['num_partials']} partials in "
+                    f"{raw_info['wall_clock_sec']}s, "
+                    f"{_peak_rss_mb():.1f} MB RSS"
+                )
         else:
             raise ValueError(f"unknown asr_backend: {asr_backend!r}")
         print()

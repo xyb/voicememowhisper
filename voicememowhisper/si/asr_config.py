@@ -70,6 +70,23 @@ _HTTP_KEY_MAP = {
     "timeout_sec": "asr_timeout_sec",
 }
 
+# [asr.ws] → CLI namespace keys for the ws-funasr backend.
+# Keys must not collide with [asr.http] — the user is allowed to keep
+# both sections in the same config file (one for OpenAI-Audio HTTP
+# fallback, one for the streaming WS path) and pick between them via
+# ``[asr] backend = "..."``.
+_WS_KEY_MAP = {
+    "url": "asr_ws_url",
+    "idle_timeout_sec": "asr_ws_idle_timeout_sec",
+    "connect_timeout_sec": "asr_ws_connect_timeout_sec",
+    "sample_rate": "asr_ws_sample_rate",
+    "chunk_bytes": "asr_ws_chunk_bytes",
+    "chunk_send_interval_sec": "asr_ws_chunk_send_interval_sec",
+    "enable_intermediate_result": "asr_ws_enable_intermediate_result",
+    "enable_punctuation_prediction": "asr_ws_enable_punctuation_prediction",
+    "enable_inverse_text_normalization": "asr_ws_enable_inverse_text_normalization",
+}
+
 # [diarize.http] → CLI namespace keys.
 _DIARIZE_HTTP_KEY_MAP = {
     "url": "diarize_url",
@@ -144,6 +161,13 @@ def load_asr_config(explicit: str | Path | None = None) -> dict[str, Any]:
             continue  # unknown key — ignore silently
         out[mapped] = v
 
+    ws = asr.get("ws") or {}
+    for k, v in ws.items():
+        mapped = _WS_KEY_MAP.get(k)
+        if mapped is None:
+            continue  # unknown key — ignore silently
+        out[mapped] = v
+
     diarize = data.get("diarize") or {}
     if "backend" in diarize:
         out["diarize_backend"] = str(diarize["backend"])
@@ -191,6 +215,23 @@ def build_pipeline_kwargs(merged: dict[str, Any]) -> dict[str, Any]:
             if merged_key in merged:
                 cfg[http_key] = merged[merged_key]
         kwargs["asr_backend_config"] = cfg
+    elif backend in ("ws-funasr", "ws_funasr"):
+        wcfg: dict[str, Any] = {}
+        for merged_key, ws_key in (
+            ("asr_ws_url", "url"),
+            ("asr_ws_idle_timeout_sec", "idle_timeout_sec"),
+            ("asr_ws_connect_timeout_sec", "connect_timeout_sec"),
+            ("asr_ws_sample_rate", "sample_rate"),
+            ("asr_ws_chunk_bytes", "chunk_bytes"),
+            ("asr_ws_chunk_send_interval_sec", "chunk_send_interval_sec"),
+            ("asr_ws_enable_intermediate_result", "enable_intermediate_result"),
+            ("asr_ws_enable_punctuation_prediction", "enable_punctuation_prediction"),
+            ("asr_ws_enable_inverse_text_normalization",
+             "enable_inverse_text_normalization"),
+        ):
+            if merged_key in merged:
+                wcfg[ws_key] = merged[merged_key]
+        kwargs["asr_backend_config"] = wcfg
 
     d_backend = merged.get("diarize_backend") or "local_pyannote"
     kwargs["diarize_backend"] = d_backend
