@@ -80,6 +80,7 @@ def _build_asr_backend_kwargs(args: argparse.Namespace) -> dict:
         "asr_ws_url",
         "asr_ws_idle_timeout_sec",
         "asr_ws_connect_timeout_sec",
+        "asr_ws_chunk_send_interval_sec",
         "diarize_backend",
         "diarize_url",
         "diarize_api_key",
@@ -847,6 +848,15 @@ def _add_asr_backend_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--asr-ws-connect-timeout-sec", dest="asr_ws_connect_timeout_sec",
                    type=float, default=None,
                    help="ws-funasr WebSocket connect timeout in seconds (default: 15)")
+    p.add_argument("--asr-ws-chunk-send-interval-sec", dest="asr_ws_chunk_send_interval_sec",
+                   type=float, default=None,
+                   help="ws-funasr pacing between PCM chunk sends in seconds "
+                        "(default: 0.05 ≈ 12× realtime). The funasr server "
+                        "expects near-realtime audio input; bursting all "
+                        "chunks at once on a long recording overflows the "
+                        "server-side intake buffer and the connection drops. "
+                        "Lower this only if you've checked the specific "
+                        "server can handle the burst.")
 
 
 def _add_diarize_backend_args(p: argparse.ArgumentParser) -> None:

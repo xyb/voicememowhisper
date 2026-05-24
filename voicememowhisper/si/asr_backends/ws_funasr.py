@@ -103,10 +103,17 @@ class WsFunasrConfig:
     enable_punctuation_prediction: bool = True
     enable_inverse_text_normalization: bool = True
     chunk_bytes: int = _DEFAULT_CHUNK_BYTES
-    # Pacing between chunk sends. 0 = send as fast as the WS will take
-    # them, let the server's intake buffer apply backpressure naturally.
-    # Useful >0 only if a specific server can't handle bursts.
-    chunk_send_interval_sec: float = 0.0
+    # Pacing between chunk sends. The aliyun SpeechTranscriber protocol
+    # assumes near-realtime audio input — server-side audio buffer is
+    # sized for the streaming use case, and bursting 8000+ chunks
+    # back-to-back (a 90-min recording at 0.6 s per chunk) overflows
+    # it and the server / reverse-proxy closes the connection.
+    #
+    # 0.05 s ≈ 12× realtime: still fast end-to-end (90 min audio ≈
+    # 7 min wall) but stays inside the server's intake budget. Verified
+    # against funasr-aipod 2026-05-24. Lower this only if you've
+    # checked the specific server can handle the burst.
+    chunk_send_interval_sec: float = 0.05
     # How long ``recv()`` blocks during the chunk-send drain phase
     # before we send the next chunk. Tiny so the send-loop stays
     # responsive; idle detection uses ``idle_timeout_sec`` directly.
@@ -251,6 +258,8 @@ def transcribe(
         nonlocal last_event_ts
         last_event_ts = time.monotonic()
 
+    chunks_sent = 0  # mutated by the send loop; surfaced in error messages
+
     def _drain(timeout: float) -> bool:
         """Read all events available within ``timeout``; return True if
         a TranscriptionCompleted was seen (caller should stop looping).
@@ -264,7 +273,18 @@ def transcribe(
             except websocket.WebSocketTimeoutException:
                 break
             except websocket.WebSocketConnectionClosedException:
-                raise RuntimeError("ws-funasr: server closed connection unexpectedly")
+                # Bursting too fast is the usual cause — surface progress
+                # so the user can adjust chunk_send_interval_sec without
+                # guessing. ``chunks_sent`` is captured from the enclosing
+                # scope.
+                raise RuntimeError(
+                    f"ws-funasr: server closed connection after "
+                    f"{chunks_sent}/{len(chunks)} chunks (have "
+                    f"{len(sentences)} sentences, {partial_count} partials). "
+                    f"If sending finished but result is incomplete, try "
+                    f"increasing chunk_send_interval_sec (current: "
+                    f"{config.chunk_send_interval_sec}s)."
+                )
             event = _parse_event(raw)
             if event is None:
                 continue
@@ -332,6 +352,7 @@ def transcribe(
         completed_in_send_phase = False
         for idx, ch in enumerate(chunks):
             ws.send(ch, websocket.ABNF.OPCODE_BINARY)
+            chunks_sent = idx + 1
             if config.chunk_send_interval_sec > 0:
                 time.sleep(config.chunk_send_interval_sec)
             # Short non-blocking drain — keep idle timer happy. If the
