@@ -218,21 +218,28 @@ class MemoProcessor:
 
             text = None
             if self.speaker_pipeline:
-                try:
-                    LOGGER.info("Using speaker pipeline for %s", display, extra={"verbosity": 0})
-                    target_stem = Path(filename).stem
-                    text = self.speaker_pipeline.transcribe(
-                        path, label=display, target_stem=target_stem,
-                    )
-                    target_path = self.settings.transcript_dir / filename
-                    if target_path.exists():
-                        transcript_path = target_path
-                except Exception as exc:
-                    LOGGER.warning(
-                        "Speaker pipeline failed for %s, falling back to WhisperKit: %s",
-                        display, exc,
-                    )
-                    text = None
+                # No silent fallback. If the configured speaker pipeline
+                # is broken (server down, ws-funasr idle timeout, auth,
+                # ...) we want the failure to surface — silently retrying
+                # with WhisperKit produces a degraded .txt (no speaker
+                # turns, no diarization) and hides the root cause, which
+                # is the bug that bit a 90-min recording on 2026-05-24
+                # (10-min funasr timeout → 30 min WhisperKit, user only
+                # noticed when the meetlog had no speakers).
+                #
+                # The legitimate "use WhisperKit" path is when the
+                # speaker pipeline is unavailable to begin with — that
+                # branch lives in __post_init__ which leaves
+                # self.speaker_pipeline = None and falls through to the
+                # WhisperKit call below.
+                LOGGER.info("Using speaker pipeline for %s", display, extra={"verbosity": 0})
+                target_stem = Path(filename).stem
+                text = self.speaker_pipeline.transcribe(
+                    path, label=display, target_stem=target_stem,
+                )
+                target_path = self.settings.transcript_dir / filename
+                if target_path.exists():
+                    transcript_path = target_path
 
             if text is None:
                 text = self.transcriber.transcribe(path, label=display)

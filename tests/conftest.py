@@ -137,6 +137,14 @@ def settings_factory(tmp_path: Path) -> callable:
         whisperkit_extra_args=(),
         language=None,
         processing_order="newest-first",
+        # Service-level tests exercise the WhisperKit path with a fake
+        # transcriber. The speaker pipeline would otherwise try to call
+        # a live funasr server on fake bytes — fine when failures used
+        # to silently fall back to WhisperKit, but those silent
+        # fallbacks were removed (see test_processor_no_silent_fallback).
+        # Default off here; opt in per-test by passing
+        # ``speaker_pipeline_enabled=True`` to ``settings_factory``.
+        speaker_pipeline_enabled=False,
     )
 
     def _make(**overrides):
