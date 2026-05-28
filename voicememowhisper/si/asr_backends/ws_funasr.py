@@ -97,23 +97,46 @@ class WsFunasrConfig:
     # Full ws/wss endpoint URL (e.g. wss://your-funasr-host/ws/v1/asr).
     url: str
     sample_rate: int = 16000
-    idle_timeout_sec: float = 60.0
+    # Server silence ⇒ assume dead. No overall wall-clock cap, only this
+    # idle timer. 2026-05-28: 60→300. With the slow 1.2 s send pacing, a
+    # 90 s window only covers ~75 chunks, so a long silence/applause tail
+    # (server emits no recognition events) can trip the timer even though
+    # the server is alive — a 54-min clip died at chunk 5302/5459 (97%)
+    # this way. 300 s leaves ample room to ride out quiet stretches.
+    idle_timeout_sec: float = 300.0
     connect_timeout_sec: float = 15.0
     enable_intermediate_result: bool = True
     enable_punctuation_prediction: bool = True
     enable_inverse_text_normalization: bool = True
     chunk_bytes: int = _DEFAULT_CHUNK_BYTES
     # Pacing between chunk sends. The aliyun SpeechTranscriber protocol
-    # assumes near-realtime audio input — server-side audio buffer is
-    # sized for the streaming use case, and bursting 8000+ chunks
-    # back-to-back (a 90-min recording at 0.6 s per chunk) overflows
-    # it and the server / reverse-proxy closes the connection.
+    # assumes near-realtime audio input — the server consumes the PCM
+    # stream at roughly 1× realtime. Each chunk is 0.6 s of audio, so an
+    # interval below 0.6 s sends faster than the server drains, and the
+    # backlog accumulates in the server-side buffer until it overflows
+    # and the server / reverse-proxy closes the connection mid-stream.
     #
-    # 0.05 s ≈ 12× realtime: still fast end-to-end (90 min audio ≈
-    # 7 min wall) but stays inside the server's intake budget. Verified
-    # against funasr-aipod 2026-05-24. Lower this only if you've
-    # checked the specific server can handle the burst.
-    chunk_send_interval_sec: float = 0.05
+    # 2026-05-28: a 54-min recording sent at 0.15 s (4× realtime) was
+    # dropped after 1370/5459 chunks; the same clip at 0.3 s (2× realtime)
+    # later died with a send() "write operation timed out" under TCP
+    # backpressure. Both are the same failure — outpacing the server's
+    # ~1× realtime drain rate until the intake buffer overflows. The old
+    # 0.05 s "verified 2026-05-24" value only held because that clip was
+    # short enough to finish before the backlog built up.
+    #
+    # 0.6 s would be exactly 1× realtime (zero theoretical backlog) but
+    # leaves NO margin — any network jitter, server GC pause, or TCP
+    # retransmit drops instantaneous drain below 1× and the backlog
+    # creeps up again. We deliberately keep send rate well under realtime
+    # so the server always stays ahead.
+    #
+    # 1.2 s = chunk audio (0.6 s) × 2 = send at ~0.5× realtime. The
+    # server drains twice as fast as chunks arrive, so the buffer can
+    # never fill and there is ~100% headroom to ride out transient
+    # slowdowns. A 54-min clip transcribes in ~110 min wall — slow, but
+    # robust for arbitrarily long recordings, which is the whole point.
+    # The few extra minutes are worth never re-running a failed 54-min job.
+    chunk_send_interval_sec: float = 1.2
     # How long ``recv()`` blocks during the chunk-send drain phase
     # before we send the next chunk. Tiny so the send-loop stays
     # responsive; idle detection uses ``idle_timeout_sec`` directly.

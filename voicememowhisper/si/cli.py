@@ -851,12 +851,14 @@ def _add_asr_backend_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--asr-ws-chunk-send-interval-sec", dest="asr_ws_chunk_send_interval_sec",
                    type=float, default=None,
                    help="ws-funasr pacing between PCM chunk sends in seconds "
-                        "(default: 0.05 ≈ 12× realtime). The funasr server "
-                        "expects near-realtime audio input; bursting all "
-                        "chunks at once on a long recording overflows the "
-                        "server-side intake buffer and the connection drops. "
-                        "Lower this only if you've checked the specific "
-                        "server can handle the burst.")
+                        "(default: 1.2 = ~0.5× realtime). Each chunk is 0.6 s "
+                        "of audio and the funasr server drains at ~1× realtime; "
+                        "sending faster than the server consumes overflows the "
+                        "intake buffer and the connection drops (or send() "
+                        "write-times-out under TCP backpressure) mid-stream on "
+                        "long recordings. 1.2 s keeps the send rate well under "
+                        "realtime with ~100% headroom for network jitter. Lower "
+                        "only for short clips that finish before the buffer fills.")
 
 
 def _add_diarize_backend_args(p: argparse.ArgumentParser) -> None:
