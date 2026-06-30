@@ -243,6 +243,48 @@ def _list_recordings(settings: Settings, *, limit: int = 10) -> int:
     return 0
 
 
+def _pending_for_processing(settings: Settings) -> list:
+    """The recordings a real run would process: have a source/archive file but
+    no transcript yet, ordered the same way the worker scan enqueues them.
+
+    Mirrors ``VoiceMemoService.enqueue_existing`` selection (pending = not yet
+    transcribed) + sort (``processing_order``) so ``--dry-run`` previews the
+    exact backlog without touching it.
+    """
+    items = collect_recordings(settings)
+    pending = [i for i in items if (i.has_source or i.has_archive) and not i.has_transcript]
+    newest_first = settings.processing_order == "newest-first"
+    pending.sort(
+        key=lambda i: i.created_at.replace(tzinfo=None) if i.created_at else datetime.min,
+        reverse=newest_first,
+    )
+    return pending
+
+
+def _dry_run_recordings(settings: Settings) -> int:
+    """Print what a real run would transcribe, then exit. No lock, no work."""
+    try:
+        pending = _pending_for_processing(settings)
+    except Exception as err:
+        LOGGER.error("%s", err)
+        return 1
+
+    order = settings.processing_order
+    if not pending:
+        print("Dry run — no pending recordings to process (all transcribed).")
+        return 0
+
+    print(f"Dry run — would process {len(pending)} pending recording(s), order: {order}:")
+    print(f"  {'#':>2}  {'When':19}  {'Duration':8}  Title")
+    for idx, item in enumerate(pending, 1):
+        when = item.created_at.strftime("%Y-%m-%d %H:%M:%S") if item.created_at else "unknown"
+        duration_str = listing_mod._format_duration(item.duration)
+        title = item.title or item.key
+        print(f"  {idx:>2}  {when:19}  {duration_str:<8}  {title}")
+    print("(dry run — nothing transcribed; drop --dry-run to process)")
+    return 0
+
+
 def _unset_proxy_env() -> None:
     """Force every backend HTTP request to bypass any system / shell proxy.
 
@@ -324,6 +366,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--language", help="Language hint for Whisper (e.g. 'en', 'zh').")
     parser.add_argument("-l", "--list", action="store_true", help="List available recordings and exit.")
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show which pending recordings a real run would transcribe (newest-first), then exit. "
+             "Nothing is transcribed and the single-instance lock is not taken.",
+    )
+    parser.add_argument(
         "-n",
         "--limit",
         type=int,
@@ -367,6 +415,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.list:
         return _list_recordings(settings, limit=args.limit)
+
+    if args.dry_run:
+        return _dry_run_recordings(settings)
 
     # Fail-fast on a missing audio file BEFORE acquiring the
     # single-instance lock. A plain typo (`voicememo-whisper foo`) should

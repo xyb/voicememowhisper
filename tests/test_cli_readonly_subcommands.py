@@ -115,3 +115,51 @@ def test_main_nonexistent_audio_fails_fast_before_lock(
     combined = " ".join(rec.getMessage() for rec in caplog.records).lower()
     assert "not found" in combined
     assert "-l" in combined
+
+
+def test_main_dry_run_routes_to_preview_without_lock(monkeypatch, tmp_path) -> None:
+    """`--dry-run` previews the backlog and exits; it must not take the lock."""
+    settings = _stub_settings(tmp_path)
+    monkeypatch.setattr(cli, "_configure_logging", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli, "build_settings", lambda _args: settings)
+
+    called: dict[str, object] = {}
+
+    def _fake_dry(_settings: Settings) -> int:
+        called["dry"] = True
+        return 0
+
+    def _explode_lock(*_a, **_k):
+        raise AssertionError("dry-run must not acquire single_instance_lock")
+
+    monkeypatch.setattr(cli, "_dry_run_recordings", _fake_dry)
+    import voicememowhisper._lock as lock_mod
+    monkeypatch.setattr(lock_mod, "single_instance_lock", _explode_lock)
+
+    assert cli.main(["--dry-run"]) == 0
+    assert called["dry"] is True
+
+
+def test_pending_for_processing_filters_transcribed_and_sorts_newest_first(
+    monkeypatch, tmp_path
+) -> None:
+    """Pending = has a file but no transcript yet, newest-first."""
+    from datetime import datetime
+    from voicememowhisper.list_model import RecordingItem
+
+    older = RecordingItem(
+        key="a", created_at=datetime(2026, 1, 1), title="old", has_source=True
+    )
+    newer = RecordingItem(
+        key="b", created_at=datetime(2026, 6, 30), title="new", has_source=True
+    )
+    done = RecordingItem(
+        key="c", created_at=datetime(2026, 6, 29), title="done",
+        has_source=True, has_transcript=True,
+    )
+    monkeypatch.setattr(cli, "collect_recordings", lambda _s: [older, done, newer])
+
+    settings = _stub_settings(tmp_path)  # processing_order="newest-first"
+    pending = cli._pending_for_processing(settings)
+
+    assert [i.key for i in pending] == ["b", "a"]  # done dropped, newest first

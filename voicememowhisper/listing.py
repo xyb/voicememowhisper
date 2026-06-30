@@ -183,6 +183,10 @@ def collect_recordings(settings: Settings) -> list[RecordingItem]:
         elif kind == "a":
             item.has_archive = True
             item.archive_path = path
+        elif kind == "inbox":
+            # Inbox files are sources awaiting processing — same status bit as
+            # Voice Memos sources, so they show in -l / --dry-run as pending.
+            item.has_source = True
 
         dt_str, parsed_title = _parse_filename(path)
         if item.created_at is None:
@@ -203,6 +207,27 @@ def collect_recordings(settings: Settings) -> list[RecordingItem]:
     if settings.archive_dir and settings.archive_dir.exists():
         for f in settings.archive_dir.glob("*.m4a"):
             process_file(f, kind="a")
+
+    # Phase 2.5: Inbox files awaiting processing (imported, not yet
+    # transcribed/archived). Without this they were invisible to -l /
+    # --dry-run and got missed every time. Mirrors InboxProcessor.scan's
+    # extension set; dedup paths since macOS globbing is case-insensitive.
+    if settings.inbox_dir:
+        try:
+            inbox_exists = settings.inbox_dir.exists()
+        except Exception:
+            inbox_exists = False
+        if inbox_exists:
+            from .inbox import DEFAULT_INBOX_EXTENSIONS
+            seen_inbox: set[Path] = set()
+            for ext in DEFAULT_INBOX_EXTENSIONS:
+                for f in list(settings.inbox_dir.glob(f"*{ext}")) + list(
+                    settings.inbox_dir.glob(f"*{ext.upper()}")
+                ):
+                    if f in seen_inbox:
+                        continue
+                    seen_inbox.add(f)
+                    process_file(f, kind="inbox")
 
     # Phase 3: Enrich from DB metadata when item exists
     for guid, record in db_records_map.items():
