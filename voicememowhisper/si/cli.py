@@ -164,7 +164,7 @@ def _cmd_viewer(args: argparse.Namespace) -> int:
 def _cmd_run(args: argparse.Namespace) -> int:
     audio = _resolve_audio(args)
     from .pipeline import run
-    from .._lock import single_instance_lock
+    from .._lock import single_instance_lock, job_info_for_audio
 
     # `si run` is the diagnostic / re-run entry. End-to-end "first time"
     # processing of an audio file goes through the main flow
@@ -200,7 +200,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
     # can't accidentally run `voicememowhisper` in one terminal and
     # `voicememowhisper si run ...` in another — both would race on the
     # same state DB / archive / outputs dirs.
-    with single_instance_lock():
+    # Let a second instance estimate our finish time for its retry hint. Deferred
+    # (callable) so the audio probe runs only after we win the lock.
+    with single_instance_lock(job_info=lambda: job_info_for_audio(audio)):
         run(
             audio,
             model=args.model or "medium",

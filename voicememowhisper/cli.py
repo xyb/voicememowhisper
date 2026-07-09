@@ -433,13 +433,21 @@ def main(argv: list[str] | None = None) -> int:
 
     # Long-running processing: guard against a second instance racing on
     # the same Voice Memos source / state DB / archive dir.
-    from ._lock import single_instance_lock
-    with single_instance_lock():
+    from ._lock import single_instance_lock, job_info_for_audio
+
+    # Give a second instance enough to estimate our finish time (so it can tell the
+    # user when to retry). Single-file mode knows the audio up front; backlog mode
+    # doesn't, so pass nothing there. Deferred (callable) so the probe runs only
+    # after we win the lock — a losing instance never pays for it.
+    lock_job_info = (lambda: job_info_for_audio(args.audio)) if args.audio else None
+
+    with single_instance_lock(job_info=lock_job_info) as run:
         try:
             from .service import VoiceMemoService
             service = VoiceMemoService(settings)
         except Exception as err:
             LOGGER.error("%s", err)
+            run.mark("error", str(err))   # `return` exits the lock normally; record the failure
             return 1
 
         try:
@@ -463,6 +471,7 @@ def main(argv: list[str] | None = None) -> int:
                     service.join()
         except KeyboardInterrupt:
             logging.info("Interrupted by user.", extra={"verbosity": 1})
+            run.mark("interrupted")   # swallowed here, so the classifier can't see it
         finally:
             service.stop()
 
