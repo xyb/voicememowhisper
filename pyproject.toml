@@ -39,3 +39,8 @@ voicememo-whisper = "voicememowhisper.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["voicememowhisper*"]
+
+[tool.pytest.ini_options]
+markers = [
+    "real_home: test needs the real HOME (asserts on default path shape); exempt from the home-isolation fixture",
+]

@@ -430,6 +430,7 @@ def test_render_copy_uses_audio_stem_not_recording_id(tmp_path, capsys, monkeypa
     assert (output / cache_rid / "transcript.md").exists()
 
 
+@pytest.mark.real_home
 def test_default_library_lives_under_documents_not_local_share():
     """Regression guard for the 2026-04-21 relocation: speaker library
     belongs next to Audio/ and Transcripts/ under ~/Documents/, so a

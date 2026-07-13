@@ -153,6 +153,26 @@ def settings_factory(tmp_path: Path) -> callable:
     return _make
 
 
+@pytest.fixture(autouse=True)
+def _isolate_home(request, tmp_path_factory, monkeypatch) -> None:
+    """No test may touch the user's real audio library.
+
+    Several code paths fall back to a hardcoded `Path.home() / ...` location
+    when a directory argument is omitted (si.pipeline's auto-archive, for one).
+    A test that skips that argument silently writes into the real library — one
+    `si run` test deposited a 4-byte "fake" m4a in the user's archive dir.
+    Redirect HOME so any such fallback lands in a tmp dir instead.
+
+    Tests that assert on the *shape* of the real default paths opt out with
+    `@pytest.mark.real_home`.
+    """
+    if request.node.get_closest_marker("real_home"):
+        return
+    fake_home = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setattr(Path, "home", classmethod(lambda _cls: fake_home))
+
+
 @pytest.fixture()
 def settings(settings_factory) -> Settings:
     return settings_factory()
