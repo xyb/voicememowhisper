@@ -17,3 +17,6 @@ tmp/
 *.npy
 *.npz
 *.waveform
+
+# Private push entry point (not for the public repo).
+Makefile.local
