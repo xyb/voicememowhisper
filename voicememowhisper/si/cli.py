@@ -303,41 +303,87 @@ def _faster_whisper_asr_fn(model: str, language: str | None):
     return _run
 
 
+def _closeup_variants(args: argparse.Namespace) -> list:
+    """Build the set of treatments this invocation wants to compare."""
+    n_runs = max(1, int(args.asr_runs))
+
+    def asr():
+        return _faster_whisper_asr_fn(args.model, args.language)
+
+    speeds = [args.speed]
+    if getattr(args, "sweep_speeds", None):
+        speeds = [float(s) for s in args.sweep_speeds.split(",") if s.strip()]
+
+    treated: list = []
+    for sp in speeds:
+        for r in range(n_runs):
+            bits = []
+            if args.highpass:
+                bits.append(f"hp{args.highpass}")
+            if args.denoise:
+                bits.append("dn")
+            if args.gain_db:
+                bits.append(f"g{args.gain_db:g}")
+            bits.append(f"{sp}x")
+            suffix = f"#{r + 1}" if n_runs > 1 else ""
+            treated.append(closeup_mod.Variant(
+                name="-".join(bits) + suffix,
+                asr=asr(),
+                speed=sp,
+                denoise=args.denoise,
+                gain_db=args.gain_db,
+                highpass_hz=args.highpass,
+            ))
+
+    # A control run tells you whether the filtering rescued anything or just
+    # changed what the model was willing to invent.
+    if getattr(args, "compare_raw", False):
+        treated.append(closeup_mod.Variant(name="raw-1.0x", asr=asr()))
+
+    return treated
+
+
 def _cmd_closeup(args: argparse.Namespace) -> int:
     audio = Path(args.audio).expanduser().resolve()
     if not audio.exists():
         print(f"audio not found: {audio}", file=sys.stderr)
         return 2
 
-    n_runs = max(1, int(args.asr_runs))
-    asr_fns = [
-        _faster_whisper_asr_fn(args.model, args.language)
-        for _ in range(n_runs)
-    ]
+    variants = _closeup_variants(args)
+    n = len(variants)
 
     print(
-        f"# closeup {audio.name} [{args.start:.1f}s → {args.end:.1f}s] "
-        f"at {args.speed}x, {n_runs} ASR run(s)",
+        f"# closeup {audio.name} [{args.start:.1f}s → {args.end:.1f}s], "
+        f"{n} variant(s): {', '.join(v.name for v in variants)}",
         file=sys.stderr,
     )
     report = closeup_mod.analyze_window(
-        audio, start=args.start, end=args.end,
-        asr_fns=asr_fns, speed=args.speed,
+        audio, start=args.start, end=args.end, variants=variants,
     )
 
     if not report.segments:
-        print("nothing heard in this window")
+        print("nothing heard in this window, under any treatment")
         return 0
 
-    print(f"{'start':>8} {'end':>8} {'votes':>6}  {'bc':>3}  text")
+    print(f"{'start':>8} {'end':>8} {'votes':>7}  {'bc':>3}  text")
     for s in report.segments:
         flag = "BC" if s.is_backchannel else ""
-        print(f"{s.start:8.2f} {s.end:8.2f} {s.votes:5}/{n_runs}  {flag:>3}  {s.text}")
+        print(f"{s.start:8.2f} {s.end:8.2f} {s.votes:4}/{n:<2}  {flag:>3}  {s.text}")
+
+    # A segment only one treatment could hear is the interesting case, in both
+    # directions: either that treatment rescued it, or that treatment made it
+    # up. Name the treatment so the next run can tell which.
+    lonely = [s for s in report.segments if s.votes == 1 and n > 1]
+    if lonely:
+        print()
+        print("# heard by only one treatment — rescued, or invented? check these:")
+        for s in lonely:
+            print(f"  {s.start:8.2f}  [{', '.join(s.heard_by)}]  {s.text}")
 
     clean = report.clean_subranges(min_duration=args.min_clean)
     print()
     if clean:
-        print("# clean stretches (nobody else audible) — safe to enroll from:")
+        print("# clean stretches (no listener audible) — safe to enroll from:")
         for lo, hi in clean:
             print(f"  {lo:8.2f} → {hi:8.2f}  ({hi - lo:.1f}s)")
     else:
@@ -1238,9 +1284,26 @@ def build_parser() -> argparse.ArgumentParser:
     scu.add_argument("--start", type=float, required=True, help="Window start (seconds).")
     scu.add_argument("--end", type=float, required=True, help="Window end (seconds).")
     scu.add_argument("--runs", dest="asr_runs", type=int, default=3,
-                     help="How many ASR passes to vote across (default: 3).")
+                     help="ASR passes per treatment, to vote across (default: 3).")
     scu.add_argument("--speed", type=float, default=closeup_mod.DEFAULT_SLOWDOWN,
                      help=f"Slowdown factor, must be <1 (default: {closeup_mod.DEFAULT_SLOWDOWN}).")
+    scu.add_argument("--sweep-speeds", default=None,
+                     help="Comma-separated speeds to try instead of one, e.g. '0.5,0.25,0.125'. "
+                          "The best slowdown is recording-dependent and trying is cheap; "
+                          "each speed becomes its own variant and they vote against each other.")
+    scu.add_argument("--denoise", action="store_true",
+                     help="Spectral denoise (afftdn) before recognizing. Helps when a quiet "
+                          "voice is buried in hiss; can erase a faint acknowledgement entirely, "
+                          "so compare against a run without it.")
+    scu.add_argument("--gain-db", type=float, default=None,
+                     help="Amplify by N dB. For a talker far from the mic.")
+    scu.add_argument("--highpass", type=int, default=None, metavar="HZ",
+                     help="Cut rumble below HZ (try 80). Speech does not live down there; "
+                          "cheap and rarely harmful.")
+    scu.add_argument("--compare-raw", action="store_true",
+                     help="Also run one variant with no filtering at all, as a control. "
+                          "Worth it: it tells you whether the treatment actually rescued "
+                          "anything or merely changed what the model hallucinated.")
     scu.add_argument("--model", default="medium", help="faster-whisper model (default: medium).")
     scu.add_argument("--language", default="zh", help="Language hint (default: zh).")
     scu.add_argument("--min-clean", type=float, default=3.0,

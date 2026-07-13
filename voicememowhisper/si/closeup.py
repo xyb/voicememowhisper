@@ -1,9 +1,24 @@
 """Close-up analysis: spend heavily on a few seconds to see them clearly.
 
-This is a magnifying glass, not a pipeline stage. Everything here is far too
-expensive to run over a whole recording — it slows the audio down and
-transcribes it several times over. That is the point: on a ten-second window
-the cost is seconds, and in exchange you see things a single 1.0x pass cannot.
+A toolbox, not a pipeline stage. See ``docs/closeup.md`` for the full map —
+what each transform is for, where they interact badly, and what is worth
+building next.
+
+The one idea underneath everything here:
+
+    Run the same few seconds through several different treatments, and compare
+    what comes back.
+
+Where the treatments agree, you have something solid. Where they disagree, you
+have found the hard part — and that is useful too, because it tells you what
+not to trust. A :class:`Variant` is one treatment: a chain of audio transforms
+(denoise, gain, high-pass, slowdown — all ffmpeg filters, so stacking them
+costs one pass) plus a recognizer. :func:`analyze_window` runs a set of them
+over one window and lines the results up.
+
+Everything here is far too expensive to run over a whole recording. That is the
+point: on a ten-second window the cost is seconds, and in exchange you see
+things a single 1.0x pass cannot.
 
 Two jobs it exists for:
 
@@ -81,7 +96,8 @@ class CloseupSegment:
     end: float
     text: str = ""
     source: str = "asr"          # "rms" / "asr" / "rms+asr"
-    votes: int = 0               # how many ASR runs backed this
+    votes: int = 0               # how many variants backed this
+    heard_by: tuple[str, ...] = ()   # which ones, by name
     rms_db: float | None = None
 
     @property
@@ -91,6 +107,41 @@ class CloseupSegment:
     @property
     def is_backchannel(self) -> bool:
         return is_backchannel_text(self.text)
+
+
+@dataclass(frozen=True)
+class Variant:
+    """One treatment of the window: audio transforms, then a recognizer.
+
+    The transforms are ffmpeg filters and compose into a single chain, so
+    stacking them costs one pass over a few seconds of audio. Which is the
+    whole point — trying five treatments is cheap enough that there is no
+    reason to agonise over picking one.
+    """
+
+    name: str
+    asr: object                  # (wav_path) -> [(start, end, text), ...]
+    speed: float | None = None   # slowdown; None = leave the timeline alone
+    denoise: bool = False
+    gain_db: float | None = None
+    highpass_hz: int | None = None
+    lowpass_hz: int | None = None
+    loudnorm: bool = False
+
+    def filter_chain(self) -> str:
+        return audio_filter(
+            speed=self.speed,
+            denoise=self.denoise,
+            gain_db=self.gain_db,
+            highpass_hz=self.highpass_hz,
+            lowpass_hz=self.lowpass_hz,
+            loudnorm=self.loudnorm,
+        )
+
+    @property
+    def time_scale(self) -> float:
+        """Multiply a timestamp from this variant's output to get real time."""
+        return self.speed if self.speed else 1.0
 
 
 @dataclass
@@ -154,6 +205,48 @@ def atempo_filter(speed: float) -> str:
     return ",".join(f"atempo={s}" for s in chain)
 
 
+def audio_filter(
+    *,
+    speed: float | None = None,
+    denoise: bool = False,
+    gain_db: float | None = None,
+    highpass_hz: int | None = None,
+    lowpass_hz: int | None = None,
+    loudnorm: bool = False,
+) -> str:
+    """Compose the transforms into one ffmpeg filter chain.
+
+    Order is signal-processing order, not cosmetic:
+
+    1. **Band-limit first** (highpass / lowpass). Throwing away rumble and hiss
+       before anything else means the later stages are not spending their
+       dynamic range on frequencies where speech does not live.
+    2. **Then denoise.** With the junk bands gone, the noise estimate is about
+       the noise that actually overlaps speech.
+    3. **Then amplify.** Boost after cleaning, never before — amplifying first
+       just hands the denoiser a louder mess.
+    4. **Stretch last.** Slowing down is about giving the recognizer more
+       frames per token; it has nothing to say about the spectrum, so it goes
+       at the end where it cannot confuse the filters that do.
+
+    Returns "" when nothing was asked for, which callers treat as "copy".
+    """
+    chain: list[str] = []
+    if highpass_hz:
+        chain.append(f"highpass=f={highpass_hz}")
+    if lowpass_hz:
+        chain.append(f"lowpass=f={lowpass_hz}")
+    if denoise:
+        chain.append("afftdn")
+    if loudnorm:
+        chain.append("loudnorm")
+    if gain_db:
+        chain.append(f"volume={gain_db}dB")
+    if speed is not None:
+        chain.append(atempo_filter(speed))
+    return ",".join(chain)
+
+
 def cut_window(audio: Path, out_wav: Path, start: float, end: float) -> None:
     """Extract [start, end) as 16k mono wav."""
     subprocess.run(
@@ -166,18 +259,44 @@ def cut_window(audio: Path, out_wav: Path, start: float, end: float) -> None:
     )
 
 
+def apply_filters(audio: Path, out_audio: Path, chain: str) -> None:
+    """Run one filter chain over the audio. Empty chain = straight copy."""
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(audio), "-ac", "1", "-ar", "16000",
+    ]
+    if chain:
+        cmd += ["-filter:a", chain]
+    cmd.append(str(out_audio))
+    subprocess.run(cmd, check=True)
+
+
 def slowdown_audio(audio: Path, out_audio: Path, speed: float) -> None:
-    """ffmpeg atempo cascade. Same content, stretched in time."""
-    subprocess.run(
-        [
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-i", str(audio),
-            "-ac", "1", "-ar", "16000",
-            "-filter:a", atempo_filter(speed),
-            str(out_audio),
-        ],
-        check=True,
-    )
+    """Slowdown only. Kept for callers that want just the one transform."""
+    apply_filters(audio, out_audio, atempo_filter(speed))
+
+
+def speed_sweep(
+    asr_factory,
+    speeds: list[float] | None = None,
+    *,
+    denoise: bool = False,
+    gain_db: float | None = None,
+) -> list[Variant]:
+    """One variant per speed. The optimum is recording-dependent, and trying
+    is cheap enough that guessing is not worth the thought."""
+    speeds = speeds or [0.5, 0.25]
+    tag = "denoise" if denoise else "plain"
+    return [
+        Variant(
+            name=f"{tag}-{s}x",
+            asr=asr_factory(),
+            speed=s,
+            denoise=denoise,
+            gain_db=gain_db,
+        )
+        for s in speeds
+    ]
 
 
 # ---------- RMS gate (pure core, so it is testable without audio) ---------
@@ -262,54 +381,70 @@ def analyze_window(
     audio: Path,
     start: float,
     end: float,
-    asr_fns: list,
+    variants: list[Variant] | None = None,
+    *,
+    asr_fns: list | None = None,
     speed: float = DEFAULT_SLOWDOWN,
     tmp_dir: Path | None = None,
     cut_fn=cut_window,
 ) -> WindowReport:
-    """Look hard at [start, end) and report what is in it.
+    """Run [start, end) through every variant and line the results up.
 
-    Each entry in ``asr_fns`` takes the slowed wav and returns
-    ``[(start, end, text), ...]`` on the *slowed* timeline. Pass the same
-    backend several times (or several different backends) to get a vote per
-    segment: agreement across runs is the confidence signal.
+    Each variant applies its own filter chain and then its own recognizer.
+    Segments that several variants heard at the same moment fold into one,
+    carrying the count and the names — so you can see not just *how* confident
+    to be, but *which treatment* was the one that rescued a stubborn passage.
 
-    Timestamps come back absolute to the recording, so a hit 2s into a window
-    cut at 100s reports as 102s.
+    Timestamps come back absolute to the recording: a hit 2s into a window cut
+    at 100s reports as 102s, whatever the variant's playback speed was.
+
+    ``asr_fns`` is the older, simpler form — a list of recognizers all run at
+    the same ``speed``. It builds the equivalent variants for you.
     """
     if end <= start:
         raise ValueError("end must be after start")
-    if not asr_fns:
-        raise ValueError("at least one ASR function is required")
+
+    if variants is None:
+        if not asr_fns:
+            raise ValueError("pass either variants or asr_fns")
+        variants = [
+            Variant(name=f"run-{i + 1}", asr=fn, speed=speed)
+            for i, fn in enumerate(asr_fns)
+        ]
+    if not variants:
+        raise ValueError("at least one variant is required")
 
     tmp_dir = tmp_dir or Path("/tmp")
     win = tmp_dir / f"_closeup_{start:.0f}_{end:.0f}.wav"
-    slow = tmp_dir / f"_closeup_{start:.0f}_{end:.0f}_{speed}.wav"
-
     cut_fn(audio, win, start, end)
-    try:
-        slowdown_audio(win, slow, speed)
-    except Exception:
-        win.unlink(missing_ok=True)
-        raise
 
+    heard: list[CloseupSegment] = []
     try:
-        heard: list[CloseupSegment] = []
-        for asr in asr_fns:
-            for s_slow, e_slow, text in asr(slow):
-                # Slowed timeline → window-relative → absolute.
-                heard.append(CloseupSegment(
-                    start=start + s_slow * speed,
-                    end=start + e_slow * speed,
-                    text=(text or "").strip(),
-                    source="asr",
-                    votes=1,
-                ))
+        for v in variants:
+            treated = tmp_dir / f"_closeup_{start:.0f}_{end:.0f}_{_slug(v.name)}.wav"
+            try:
+                apply_filters(win, treated, v.filter_chain())
+                scale = v.time_scale
+                for s_out, e_out, text in v.asr(treated):
+                    # Variant's timeline → window-relative → absolute.
+                    heard.append(CloseupSegment(
+                        start=start + s_out * scale,
+                        end=start + e_out * scale,
+                        text=(text or "").strip(),
+                        source="asr",
+                        votes=1,
+                        heard_by=(v.name,),
+                    ))
+            finally:
+                treated.unlink(missing_ok=True)
     finally:
         win.unlink(missing_ok=True)
-        slow.unlink(missing_ok=True)
 
     return WindowReport(start=start, end=end, segments=_tally(heard))
+
+
+def _slug(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]", "_", name)
 
 
 def _agree(a: CloseupSegment, b: CloseupSegment) -> bool:
@@ -327,7 +462,12 @@ def _agree(a: CloseupSegment, b: CloseupSegment) -> bool:
 
 
 def _tally(heard: list[CloseupSegment]) -> list[CloseupSegment]:
-    """Fold runs that heard the same thing at the same moment into one vote."""
+    """Fold variants that heard the same thing at the same moment into one.
+
+    The surviving segment keeps the names of everything that backed it, which
+    is what makes "only the denoised pass could hear this" a visible fact
+    rather than a hunch.
+    """
     merged: list[CloseupSegment] = []
     for seg in sorted(heard, key=lambda s: s.start):
         for i, kept in enumerate(merged):
@@ -338,6 +478,7 @@ def _tally(heard: list[CloseupSegment]) -> list[CloseupSegment]:
                     text=kept.text,
                     source=kept.source,
                     votes=kept.votes + 1,
+                    heard_by=tuple(sorted(set(kept.heard_by) | set(seg.heard_by))),
                     rms_db=kept.rms_db,
                 )
                 break
@@ -347,15 +488,23 @@ def _tally(heard: list[CloseupSegment]) -> list[CloseupSegment]:
 
 
 __all__ = [
+    # the unit of "try it another way", and what comes back
+    "Variant",
     "CloseupSegment",
     "WindowReport",
     "analyze_window",
+    "speed_sweep",
+    # transforms
+    "audio_filter",
+    "atempo_filter",
+    "apply_filters",
+    "cut_window",
+    "slowdown_audio",
+    # comparisons
     "is_backchannel_text",
+    # the ASR-free acoustic path
     "adaptive_thresholds",
     "segments_from_db",
     "detect_rms_candidates",
-    "atempo_filter",
-    "cut_window",
-    "slowdown_audio",
     "DEFAULT_SLOWDOWN",
 ]
