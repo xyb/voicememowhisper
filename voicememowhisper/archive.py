@@ -62,7 +62,10 @@ class ArchiveManager:
         timestamp = resolve_created_at(memo)
         timestamp_str = timestamp.strftime("%Y-%m-%d_%H-%M-%S") if timestamp else "undated"
         title = memo.title or memo.guid
-        return f"{timestamp_str}_{sanitize_filename(title)}.m4a"
+        # Keep the source's real extension — a .flac archived as .m4a is a name
+        # that lies about its contents (decoders sniff, humans and `file` don't).
+        suffix = memo.path.suffix.lower() or ".m4a"
+        return f"{timestamp_str}_{sanitize_filename(title)}{suffix}"
 
     def archive_copy(self, src: Path, archive_filename: str, *, display_name: str) -> Optional[Path]:
         """Copy a source file into archive directory under a conflict-free name."""
