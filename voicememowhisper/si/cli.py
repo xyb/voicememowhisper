@@ -30,6 +30,7 @@ import sys
 from pathlib import Path
 
 # Lightweight imports only at module top.
+from . import closeup as closeup_mod
 from .pipeline import STEPS, STEP_BY_NAME, STEP_BY_NUM, STEP_NAMES, resolve_step
 
 DEFAULT_RUNS = Path.home() / ".local" / "share" / "voicememowhisper" / "speaker-id" / "runs"
@@ -285,6 +286,65 @@ def _audio_known_to_main_flow(audio: Path, recording_id: str | None) -> bool:
     return False
 
 
+def _faster_whisper_asr_fn(model: str, language: str | None):
+    """Adapt faster-whisper into the (path) -> [(start, end, text)] shape.
+
+    Each call reloads the model, which is exactly what makes the runs
+    independent enough to be worth voting across — and on a ten-second window
+    the reload dominates nothing.
+    """
+    def _run(wav: Path):
+        from faster_whisper import WhisperModel
+
+        m = WhisperModel(model, device="cpu", compute_type="int8")
+        segs, _info = m.transcribe(str(wav), language=language, vad_filter=False)
+        return [(s.start, s.end, s.text) for s in segs]
+
+    return _run
+
+
+def _cmd_closeup(args: argparse.Namespace) -> int:
+    audio = Path(args.audio).expanduser().resolve()
+    if not audio.exists():
+        print(f"audio not found: {audio}", file=sys.stderr)
+        return 2
+
+    n_runs = max(1, int(args.asr_runs))
+    asr_fns = [
+        _faster_whisper_asr_fn(args.model, args.language)
+        for _ in range(n_runs)
+    ]
+
+    print(
+        f"# closeup {audio.name} [{args.start:.1f}s → {args.end:.1f}s] "
+        f"at {args.speed}x, {n_runs} ASR run(s)",
+        file=sys.stderr,
+    )
+    report = closeup_mod.analyze_window(
+        audio, start=args.start, end=args.end,
+        asr_fns=asr_fns, speed=args.speed,
+    )
+
+    if not report.segments:
+        print("nothing heard in this window")
+        return 0
+
+    print(f"{'start':>8} {'end':>8} {'votes':>6}  {'bc':>3}  text")
+    for s in report.segments:
+        flag = "BC" if s.is_backchannel else ""
+        print(f"{s.start:8.2f} {s.end:8.2f} {s.votes:5}/{n_runs}  {flag:>3}  {s.text}")
+
+    clean = report.clean_subranges(min_duration=args.min_clean)
+    print()
+    if clean:
+        print("# clean stretches (nobody else audible) — safe to enroll from:")
+        for lo, hi in clean:
+            print(f"  {lo:8.2f} → {hi:8.2f}  ({hi - lo:.1f}s)")
+    else:
+        print("# no clean stretch of the requested length — pick another block")
+    return 0
+
+
 def _cmd_steps(_args: argparse.Namespace) -> int:
     print("Speaker-ID pipeline stages:\n")
     for num, name, desc in STEPS:
@@ -432,6 +492,12 @@ def _cmd_library_find_candidates(args: argparse.Namespace, library: Path) -> int
     import json as _json
     import subprocess as _sp
 
+    # Bad arguments are worth catching before we go looking for cache files —
+    # otherwise the user gets "merged.json not found" for a typo in a flag.
+    if getattr(args, "vet", False) and not getattr(args, "audio", None):
+        print("--vet requires --audio (it has to listen to the audio)", file=sys.stderr)
+        return 2
+
     runs_dir = _path_or_default(getattr(args, "runs", None), DEFAULT_RUNS)
     rid = getattr(args, "recording_id", None)
     if not rid and getattr(args, "audio", None):
@@ -533,9 +599,43 @@ def _cmd_library_find_candidates(args: argparse.Namespace, library: Path) -> int
             dur = g["end"] - g["start"]
             preview = g["text"][:60].replace("\n", " ")
             print(f"  [{i}] {g['start']:7.1f}-{g['end']:7.1f}  {dur:5.1f}s  {preview}")
+
+            # Diarization hands us a block attributed to one speaker, but a
+            # listener's 0.2s "嗯" hides inside it. Cutting the middle blindly
+            # can land right on top of one, and that second voice then goes
+            # into the speaker's centroid. Vetting finds the stretches with
+            # nobody else in them, and the cut below comes out of the best one.
+            vet_range: tuple[float, float] | None = None
+            if getattr(args, "vet", False) and audio_path:
+                report = closeup_mod.analyze_window(
+                    audio_path, start=g["start"], end=g["end"],
+                    asr_fns=[
+                        _faster_whisper_asr_fn(
+                            getattr(args, "vet_model", "medium"),
+                            getattr(args, "vet_language", "zh"),
+                        )
+                        for _ in range(max(1, int(getattr(args, "vet_runs", 2))))
+                    ],
+                )
+                bcs = report.backchannels()
+                clean = report.clean_subranges(min_duration=cut_middle or 5.0)
+                if bcs:
+                    spots = ", ".join(f"{s.start:.1f}s" for s in bcs[:6])
+                    print(f"      vet: {len(bcs)} listener acknowledgement(s) inside — at {spots}")
+                else:
+                    print("      vet: nobody else audible")
+                if clean:
+                    vet_range = max(clean, key=lambda r: r[1] - r[0])
+                    print(f"      vet: cleanest stretch {vet_range[0]:.1f}-{vet_range[1]:.1f}s "
+                          f"({vet_range[1] - vet_range[0]:.1f}s)")
+                else:
+                    print("      vet: no clean stretch long enough — skip this block")
+
             if cut_middle and audio_path:
-                cut_dur = min(cut_middle, dur)
-                ss = g["start"] + max(0.0, (dur - cut_dur) / 2)
+                lo, hi = vet_range if vet_range else (g["start"], g["end"])
+                span = hi - lo
+                cut_dur = min(cut_middle, span)
+                ss = lo + max(0.0, (span - cut_dur) / 2)
                 clip_name = f"{spk}-{i:02d}-{int(ss)}-{int(ss + cut_dur)}.m4a"
                 clip_path = out_dir / clip_name
                 cmd = [
@@ -1050,6 +1150,20 @@ def build_parser() -> argparse.ArgumentParser:
                            "by default, override with --out-dir.")
     slfc.add_argument("--out-dir", default="/tmp",
                       help="Where to write cut clips (default: /tmp).")
+    slfc.add_argument("--vet", action="store_true",
+                      help="Before cutting, look inside each block for listener "
+                           "acknowledgements (嗯 / 对) that diarization folded into "
+                           "it — a second voice in an enrollment clip quietly "
+                           "poisons the speaker's centroid. With --cut-middle-sec, "
+                           "the clip is cut from the cleanest stretch instead of "
+                           "blindly from the middle. Requires --audio; slow (see "
+                           "si/closeup.py).")
+    slfc.add_argument("--vet-runs", type=int, default=2,
+                      help="ASR passes per block when vetting (default: 2).")
+    slfc.add_argument("--vet-model", default="medium",
+                      help="faster-whisper model used for vetting (default: medium).")
+    slfc.add_argument("--vet-language", default="zh",
+                      help="Language hint for vetting (default: zh).")
     # `score` — cross-match a cached recording's speakers against the library.
     # Pure numpy (reads cached .npz), so safe to run in parallel with a live
     # pyannote pipeline and fast enough for interactive iteration.
@@ -1104,6 +1218,34 @@ def build_parser() -> argparse.ArgumentParser:
                         description="List which pipeline artifacts exist for a given audio file.")
     _add_common_audio_args(si)
     si.set_defaults(_handler=_cmd_inspect)
+
+    # `closeup` — the magnifying glass. Deliberately expensive, deliberately
+    # scoped to a few seconds; see si/closeup.py for why it must not be run
+    # over a whole recording.
+    scu = sub.add_parser(
+        "closeup",
+        help="Look hard at a few seconds: slow the audio down, transcribe it several times, vote",
+        description="Cut [--start, --end) out of the audio, slow it down, and "
+                    "transcribe it N times over. Each segment reports how many "
+                    "runs backed it, and short listener acknowledgements "
+                    "(嗯 / 对 / uh-huh) are flagged — they are the thing that "
+                    "silently pollutes an enrollment clip. Use it to vet a clip "
+                    "before enrolling, or to read a few seconds the main pass "
+                    "turned to mush. Far too slow for a whole recording; that is "
+                    "the trade it makes.",
+    )
+    scu.add_argument("audio", help="Audio file to look into.")
+    scu.add_argument("--start", type=float, required=True, help="Window start (seconds).")
+    scu.add_argument("--end", type=float, required=True, help="Window end (seconds).")
+    scu.add_argument("--runs", dest="asr_runs", type=int, default=3,
+                     help="How many ASR passes to vote across (default: 3).")
+    scu.add_argument("--speed", type=float, default=closeup_mod.DEFAULT_SLOWDOWN,
+                     help=f"Slowdown factor, must be <1 (default: {closeup_mod.DEFAULT_SLOWDOWN}).")
+    scu.add_argument("--model", default="medium", help="faster-whisper model (default: medium).")
+    scu.add_argument("--language", default="zh", help="Language hint (default: zh).")
+    scu.add_argument("--min-clean", type=float, default=3.0,
+                     help="Shortest clean stretch worth reporting, in seconds (default: 3).")
+    scu.set_defaults(_handler=_cmd_closeup)
 
     # `steps`.
     sst = sub.add_parser("steps", help="Print the ordered list of pipeline steps",
