@@ -145,12 +145,31 @@ class VoiceMemoService:
 
         LOGGER.info("Processing single audio: %s", path, extra={"verbosity": 0})
         self._log_sources()
+
+        # An Inbox file is ours to consume: move it into the archive first, the
+        # same way the batch scan does. Enqueueing the Inbox path directly would
+        # send it down ArchiveManager's *copy* path (right for Voice Memos
+        # sources, which we must never move) and strand the original in Inbox.
+        if self._is_in_inbox(path):
+            moved = self._process_inbox_file(path)
+            if moved is None:
+                raise RuntimeError(f"failed to move Inbox file into archive: {path}")
+            path = moved
+
         self._worker_thread = threading.Thread(
             target=self._worker_loop, name="VoiceMemoWorker", daemon=True
         )
         self._worker_thread.start()
         self._metadata_cache.refresh()
         self.enqueue_path(path)
+
+    def _is_in_inbox(self, path: Path) -> bool:
+        if not self.settings.inbox_dir:
+            return False
+        try:
+            return path.resolve().is_relative_to(self.settings.inbox_dir.resolve())
+        except (OSError, ValueError):
+            return False
 
     def stop(self) -> None:
         LOGGER.info("Stopping Voice Memo transcription service", extra={"verbosity": 1})
