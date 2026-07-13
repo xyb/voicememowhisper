@@ -20,7 +20,7 @@ from .watcher import start_watcher
 
 LOGGER = logging.getLogger("inbox")
 
-DEFAULT_INBOX_EXTENSIONS: tuple[str, ...] = (".m4a", ".mp3", ".wav", ".m4v", ".aac")
+DEFAULT_INBOX_EXTENSIONS: tuple[str, ...] = (".m4a", ".mp3", ".wav", ".m4v", ".aac", ".flac")
 
 
 def date_from_filename(path: Path) -> Optional[datetime]:
