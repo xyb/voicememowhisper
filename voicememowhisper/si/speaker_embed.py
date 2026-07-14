@@ -100,6 +100,9 @@ class CommunityOneEmbedder:
     def _ensure_loaded(self) -> None:
         if self._loaded:
             return
+        from .._lock import acquire_compute_lock
+
+        acquire_compute_lock(what="the pyannote speaker embedder")
         # Lazy import so module import is cheap.
         from pyannote.audio import Pipeline
 

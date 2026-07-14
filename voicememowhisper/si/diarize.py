@@ -127,6 +127,9 @@ def run_diarization(
     ``DiarizeProgressHook`` so the caller sees sub-step boundaries and
     throttled progress inside each sub-step.
     """
+    from .._lock import acquire_compute_lock
+
+    acquire_compute_lock(what="the pyannote diarization pipeline")
     # Lazy import so that --help works without ML stack loaded.
     import numpy as np
 

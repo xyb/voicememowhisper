@@ -73,6 +73,9 @@ def _configure_mpl_fonts() -> None:
 
 def _transcribe_with_words(audio: Path, model_name: str, language: str) -> dict:
     """Run faster-whisper with word_timestamps=True and return a dict."""
+    from .._lock import acquire_compute_lock
+
+    acquire_compute_lock(what=f"faster-whisper ({model_name})")
     from faster_whisper import WhisperModel
 
     print(f"[viewer] loading faster-whisper {model_name} ...", file=sys.stderr)

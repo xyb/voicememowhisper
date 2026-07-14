@@ -294,6 +294,9 @@ def _faster_whisper_asr_fn(model: str, language: str | None):
     the reload dominates nothing.
     """
     def _run(wav: Path):
+        from .._lock import acquire_compute_lock
+
+        acquire_compute_lock(what=f"faster-whisper ({model})")
         from faster_whisper import WhisperModel
 
         m = WhisperModel(model, device="cpu", compute_type="int8")
@@ -533,6 +536,75 @@ def _cmd_library(args: argparse.Namespace) -> int:
     return 0
 
 
+# Below this mean level the source is far-field (the rolling recorder across a
+# room) and the embedder degrades badly on it — normalize before enrolling.
+# Meeting audio sits near -20 dB; the recorder's family audio measured -49..-52.
+QUIET_SOURCE_DBFS = -35.0
+
+# An enrollment clip that is mostly silence embeds to nothing useful. Measured:
+# a clip with 2.4s of speech in 20s (12%) self-matched at 0.54 and lost to a
+# wrong speaker at 0.56. Warn below this.
+MIN_SPEECH_FRACTION = 0.35
+
+# Deliberately slow, as a floor on how much time a segment's text could occupy.
+# Used only to stop ASR's occasional "2 words stretched over 40s of silence"
+# segment from being counted as 40s of speech.
+MIN_CHARS_PER_SEC = 2.0
+
+
+def _mean_volume_db(audio: Path, start: float, dur: float) -> float | None:
+    """Mean dBFS of one window, via ffmpeg's volumedetect. None if it can't be
+    measured — callers treat that as "don't touch the gain"."""
+    import subprocess as _subp
+
+    try:
+        out = _subp.run(
+            ["ffmpeg", "-hide_banner", "-ss", f"{start:.2f}", "-t", f"{dur:.2f}",
+             "-i", str(audio), "-af", "volumedetect", "-f", "null", "-"],
+            capture_output=True, text=True, check=True,
+        ).stderr
+        for line in out.splitlines():
+            if "mean_volume:" in line:
+                return float(line.split("mean_volume:")[1].strip().split()[0])
+    except (FileNotFoundError, _subp.CalledProcessError, ValueError, IndexError):
+        pass
+    return None
+
+
+def _speech_fraction(segs: list[dict], start: float, end: float) -> float | None:
+    """Fraction of [start, end] that the transcript says is speech.
+
+    Measured off the transcript, not the waveform. Energy thresholding was tried
+    first and does not survive the case it exists for: in a far-field recording
+    the speech barely clears the room tone, so any threshold that rejects the
+    88%-silence clip also rejects a *good* far-field clip. Measured — the bad clip
+    scored 2%, a known-good one 4%. Not separable.
+
+    The ASR already decided where the words are, so ask it.
+
+    One wrinkle: ASR sometimes stretches a 2-word utterance across 40s of silence
+    as a single segment. Cap each segment's contribution at what its text could
+    plausibly fill (a slow 2 chars/sec), so a segment whose text is two characters
+    counts as ~1s of speech however long the ASR stretched it.
+    """
+    window = end - start
+    if window <= 0:
+        return None
+
+    spoken = 0.0
+    for s in segs:
+        lo, hi = max(s["start"], start), min(s["end"], end)
+        if hi <= lo:
+            continue
+        text = (s.get("text") or "").strip()
+        if not text:
+            continue
+        plausible = len(text) / MIN_CHARS_PER_SEC
+        spoken += min(hi - lo, plausible)
+
+    return min(1.0, spoken / window)
+
+
 def _cmd_library_find_candidates(args: argparse.Namespace, library: Path) -> int:
     """List longest independent blocks per speaker in a cached recording."""
     import json as _json
@@ -630,6 +702,7 @@ def _cmd_library_find_candidates(args: argparse.Namespace, library: Path) -> int
 
     top_n = max(1, int(getattr(args, "top", 5)))
     min_dur = float(getattr(args, "min_duration", 10.0))
+    failed_cuts = 0
 
     for spk in sorted(by_spk):
         blocks = by_spk[spk]
@@ -651,10 +724,30 @@ def _cmd_library_find_candidates(args: argparse.Namespace, library: Path) -> int
             # can land right on top of one, and that second voice then goes
             # into the speaker's centroid. Vetting finds the stretches with
             # nobody else in them, and the cut below comes out of the best one.
+            #
+            # Vetting costs an ASR pass (x --vet-runs) over whatever we hand it,
+            # so vetting the whole block is quadratic-feeling waste: a 14-min
+            # block cost ~28 min of ASR to pick 20s out of it. We only ever need
+            # ONE clean stretch of cut-middle length, and a long block has one
+            # near its middle with near-certainty. So vet a window around the
+            # centre instead, sized to leave room to choose within it.
             vet_range: tuple[float, float] | None = None
             if getattr(args, "vet", False) and audio_path:
+                need = cut_middle or 5.0
+                win = getattr(args, "vet_window_sec", None) or max(3.0 * need, 60.0)
+                v_start, v_end = g["start"], g["end"]
+                if (v_end - v_start) > win:
+                    mid = (v_start + v_end) / 2.0
+                    v_start, v_end = mid - win / 2.0, mid + win / 2.0
+                    # Say so. A "nobody else audible" that silently covered 7% of
+                    # the block would read as a clean bill of health for the whole
+                    # thing — the exact misreading that puts a second voice into
+                    # someone's centroid.
+                    print(f"      vet: window {v_start:.1f}-{v_end:.1f}s "
+                          f"({win:.0f}s around the middle; block is "
+                          f"{g['end'] - g['start']:.0f}s — pass --vet-window-sec to widen)")
                 report = closeup_mod.analyze_window(
-                    audio_path, start=g["start"], end=g["end"],
+                    audio_path, start=v_start, end=v_end,
                     asr_fns=[
                         _faster_whisper_asr_fn(
                             getattr(args, "vet_model", "medium"),
@@ -664,7 +757,7 @@ def _cmd_library_find_candidates(args: argparse.Namespace, library: Path) -> int
                     ],
                 )
                 bcs = report.backchannels()
-                clean = report.clean_subranges(min_duration=cut_middle or 5.0)
+                clean = report.clean_subranges(min_duration=need)
                 if bcs:
                     spots = ", ".join(f"{s.start:.1f}s" for s in bcs[:6])
                     print(f"      vet: {len(bcs)} listener acknowledgement(s) inside — at {spots}")
@@ -676,25 +769,79 @@ def _cmd_library_find_candidates(args: argparse.Namespace, library: Path) -> int
                           f"({vet_range[1] - vet_range[0]:.1f}s)")
                 else:
                     print("      vet: no clean stretch long enough — skip this block")
+                    # Fall through with vet_range=None. Cutting the *unvetted*
+                    # middle here would hand back a clip we just failed to clear
+                    # — worse than nothing, since it looks vetted. Skip the cut.
+                    continue
 
             if cut_middle and audio_path:
                 lo, hi = vet_range if vet_range else (g["start"], g["end"])
                 span = hi - lo
                 cut_dur = min(cut_middle, span)
                 ss = lo + max(0.0, (span - cut_dur) / 2)
-                clip_name = f"{spk}-{i:02d}-{int(ss)}-{int(ss + cut_dur)}.m4a"
+                # Re-encode to 16 kHz mono WAV rather than `-c copy` into .m4a:
+                #
+                #  - .m4a can't hold every codec we read. A FLAC source (all of
+                #    the rolling recorder's output) made ffmpeg bail with "Could
+                #    not find tag for codec flac" and no clip came out — for a
+                #    whole class of input, silently.
+                #  - `-ss` with `-c copy` can only cut at a keyframe, so the clip
+                #    drifts from the range we just vetted. Vetting a stretch and
+                #    then enrolling a slightly different one defeats the point.
+                #  - 16 kHz mono is what enrollment wants anyway; emitting it here
+                #    removes a manual conversion step downstream.
+                #
+                # Re-encoding 20 s of audio costs milliseconds.
+                clip_name = f"{spk}-{i:02d}-{int(ss)}-{int(ss + cut_dur)}.wav"
                 clip_path = out_dir / clip_name
+
+                # Far-field recordings (the rolling recorder's, with the speaker
+                # across the room) land around -50 dB mean. The embedder gets
+                # visibly worse on them: the same person, the same sentence, cut
+                # raw vs loudnorm'd, self-matched at 0.54 vs 0.77 — the difference
+                # between "not recognized" and "recognized". Normalize when the
+                # source is that quiet, and say so. Meeting audio sits near -20 dB
+                # and is left alone.
+                af = None
+                mean_db = _mean_volume_db(audio_path, ss, cut_dur)
+                if mean_db is not None and mean_db < QUIET_SOURCE_DBFS:
+                    af = "loudnorm=I=-20:TP=-2"
+                    print(f"      gain: source is {mean_db:.0f} dB (far-field) — "
+                          f"normalizing to ~-20 dB; raw audio this quiet embeds poorly")
+
                 cmd = [
                     "ffmpeg", "-y", "-loglevel", "error",
                     "-ss", f"{ss:.2f}", "-i", str(audio_path),
-                    "-t", f"{cut_dur:.2f}", "-c", "copy", str(clip_path),
+                    "-t", f"{cut_dur:.2f}",
+                    *(["-af", af] if af else []),
+                    "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
+                    str(clip_path),
                 ]
                 try:
                     _sp.run(cmd, check=True)
-                    print(f"      cut → {clip_path}")
                 except (FileNotFoundError, _sp.CalledProcessError) as e:
                     print(f"      ffmpeg failed: {e}", file=sys.stderr)
+                    failed_cuts += 1
+                    continue
+
+                # --vet answers "is anyone else in here", not "did the target
+                # actually say enough". A stretch that is 90% silence passes vet
+                # trivially — nobody else is audible in silence — and passed the
+                # acoustic QC too, and produced a clip holding 2.4s of speech in
+                # 20s. Its embedding matched nobody, including its own speaker.
+                # So check the thing neither of those checks covers.
+                speech = _speech_fraction(segs, ss, ss + cut_dur)
+                if speech is not None and speech < MIN_SPEECH_FRACTION:
+                    print(f"      ⚠ only {speech:.0%} of this clip is speech — too "
+                          f"sparse to enroll; pick a denser stretch (vet passed it "
+                          f"because silence contains no other voices)")
+                print(f"      cut → {clip_path}")
         print()
+    # A cut that failed produced no clip. Exiting 0 would tell a caller (or a
+    # script looping over speakers) that it has a clip to enroll when it does not.
+    if failed_cuts:
+        print(f"{failed_cuts} clip(s) could not be cut — see errors above", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -1204,6 +1351,13 @@ def build_parser() -> argparse.ArgumentParser:
                            "the clip is cut from the cleanest stretch instead of "
                            "blindly from the middle. Requires --audio; slow (see "
                            "si/closeup.py).")
+    slfc.add_argument("--vet-window-sec", type=float, default=None,
+                      help="Vet only this many seconds around the middle of a block "
+                           "rather than all of it (default: 3x --cut-middle-sec, min 60). "
+                           "Vetting costs an ASR pass over whatever it is given, and we "
+                           "only need one clean stretch of clip length — a 14-min block "
+                           "otherwise spends ~28 min of ASR to choose 20s. Widen this if "
+                           "the middle keeps coming back dirty.")
     slfc.add_argument("--vet-runs", type=int, default=2,
                       help="ASR passes per block when vetting (default: 2).")
     slfc.add_argument("--vet-model", default="medium",

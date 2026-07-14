@@ -100,6 +100,9 @@ def transcribe(
     meaningful ETA. Without ``progress`` the iteration runs silently
     (same behaviour as before this flag existed).
     """
+    from .._lock import acquire_compute_lock
+
+    acquire_compute_lock(what=f"faster-whisper ({model_name})")
     from faster_whisper import WhisperModel
 
     # CPU on Apple Silicon. GPU would be "cuda" on Linux boxes.

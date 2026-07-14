@@ -195,6 +195,97 @@ class LockHeldError(RuntimeError):
         )
 
 
+# --- compute lock -----------------------------------------------------------
+#
+# The lock above exists to stop two runs racing on the *state DB / archive*, so
+# it was only ever taken by the entry points that write those. But every ML
+# stage also saturates CPU and holds 3-6 GB RSS, and that constraint is
+# orthogonal: `si library find-candidates --vet`, `si closeup` and friends touch
+# no shared state, took no lock — and happily ran a second pyannote alongside a
+# first one, thrashing the machine (2026-07-14: two concurrent find-candidates
+# pinned the CPU until the user killed them by hand).
+#
+# Gating the *subcommands* would just move the footgun: whoever adds the next
+# subcommand has to remember. So the gate lives at the point where a heavy model
+# is actually loaded. Any code path that loads whisper/pyannote — existing or
+# not yet written — passes through here and is serialized for free.
+#
+# Held for the life of the process, not a block: the memory stays resident and
+# the compute keeps running long after the model object is constructed, so
+# releasing at the end of a `with` would let a second process pile in mid-run.
+# The fd is deliberately never closed — the OS drops the flock on exit, kill -9
+# included.
+
+_HELD_FD: int | None = None
+
+
+def _mark_held(fd: int) -> None:
+    """Record that this process holds the lock, so a later
+    acquire_compute_lock() inside the same process is a no-op instead of
+    self-deadlocking. flock is per open-file-description, not per process: a
+    second open() of the same path in the same process would block on our own
+    lock."""
+    global _HELD_FD
+    _HELD_FD = fd
+
+
+def _clear_held(fd: int) -> None:
+    global _HELD_FD
+    if _HELD_FD == fd:
+        _HELD_FD = None
+
+
+def acquire_compute_lock(lock_path: Path | None = None, *, what: str = "a model") -> None:
+    """Serialize heavy ML work machine-wide. Call immediately before loading a
+    whisper / pyannote model.
+
+    No-op if this process already holds the lock (e.g. the main flow or `si run`
+    took it via single_instance_lock, and now a stage underneath loads a model).
+
+    If another *process* holds it, print who and exit — refusing to start is the
+    whole point. Bailing out early is also the kind thing to do: two of these
+    running at once is slower than either alone, so there is nothing to gain by
+    waiting in-process.
+    """
+    global _HELD_FD
+    if _HELD_FD is not None:
+        return
+
+    path = Path(lock_path) if lock_path is not None else DEFAULT_LOCK_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        holder = _read_holder_info(path)
+        os.close(fd)
+        err = LockHeldError(holder)
+        print(
+            f"voicememo-whisper: refusing to load {what} — {err}\n"
+            f"  Heavy stages (whisper / pyannote) are serialized on purpose: each "
+            f"saturates the CPU and holds several GB of RSS, so two at once is "
+            f"slower than one after the other and can swap the machine to a halt.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    info = {
+        "pid": os.getpid(),
+        "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "started_epoch": time.time(),
+        "argv": " ".join(sys.argv),
+    }
+    try:
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, (json.dumps(info) + "\n").encode("utf-8"))
+    except OSError:
+        pass   # holder info is a debugging nicety; the flock is what matters
+
+    _mark_held(fd)   # fd stays open for the life of the process — see above
+
+
 class _RunHandle:
     """Yielded by single_instance_lock so a body that exits the block normally
     (via ``return N`` or by swallowing its own KeyboardInterrupt) can still record
@@ -281,6 +372,13 @@ def single_instance_lock(
         os.lseek(fd, 0, os.SEEK_SET)
         os.write(fd, (json.dumps(info) + "\n").encode("utf-8"))
 
+        # Publish the fd so a model load underneath us (acquire_compute_lock)
+        # sees the lock is already ours and skips it. Without this it would
+        # open() the same path again and flock() would block on us — flock is
+        # keyed by open-file-description, so a process can deadlock against
+        # itself.
+        _mark_held(fd)
+
         _append_run_log({**_run_log_base(info), "event": "start"})
         # Default "interrupted" covers any abnormal teardown that skips the excepts
         # below — GeneratorExit, other BaseException — so an aborted run never records
@@ -324,6 +422,7 @@ def single_instance_lock(
     finally:
         # Single close for every path (lock acquired or not, clean or raised) —
         # closing twice risks closing an fd another thread has since reopened.
+        _clear_held(fd)
         try:
             os.close(fd)
         except OSError:
