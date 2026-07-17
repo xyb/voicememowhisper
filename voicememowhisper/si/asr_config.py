@@ -30,6 +30,25 @@ File format (TOML)
     # response_format = "verbose_json"
     # timeout_sec = 600
 
+    [asr.http.models_by_language]     # optional; see below
+    zh = "paraformer-large"
+    en = "sensevoice-small"
+
+Per-language models
+-------------------
+Most self-hosted ASR servers carry several models and only some of them
+speak a given language. Passing ``language = "en"`` to a Chinese-only
+model does **not** make it transcribe English — the server accepts the
+field and ignores it, and you get plausible-looking Chinese-decoded
+garbage back with no error. So the language hint alone is not enough:
+the model has to change with it.
+
+``[asr.http.models_by_language]`` maps a language code to the model to
+ask. When the run's language has an entry here, it wins over the plain
+``model`` key; otherwise ``model`` is used as before. This keeps
+``--language en`` a single flag that actually works, instead of asking
+the caller to remember a second one.
+
 Precedence
 ----------
 CLI flags > config file > built-in defaults. A CLI flag that the user
@@ -161,6 +180,12 @@ def load_asr_config(explicit: str | Path | None = None) -> dict[str, Any]:
             continue  # unknown key — ignore silently
         out[mapped] = v
 
+    models_by_language = http.get("models_by_language") or {}
+    if models_by_language:
+        out["asr_models_by_language"] = {
+            str(lang): str(model) for lang, model in models_by_language.items()
+        }
+
     ws = asr.get("ws") or {}
     for k, v in ws.items():
         mapped = _WS_KEY_MAP.get(k)
@@ -214,6 +239,8 @@ def build_pipeline_kwargs(merged: dict[str, Any]) -> dict[str, Any]:
         ):
             if merged_key in merged:
                 cfg[http_key] = merged[merged_key]
+        if "asr_models_by_language" in merged:
+            cfg["models_by_language"] = merged["asr_models_by_language"]
         kwargs["asr_backend_config"] = cfg
     elif backend in ("ws-funasr", "ws_funasr"):
         wcfg: dict[str, Any] = {}

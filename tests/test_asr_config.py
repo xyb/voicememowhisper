@@ -8,6 +8,7 @@ from unittest import mock
 import pytest
 
 from voicememowhisper.si.asr_config import (
+    build_pipeline_kwargs,
     find_config_file,
     load_asr_config,
 )
@@ -137,3 +138,46 @@ def test_load_missing_file_returns_empty(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("VMW_CONFIG", raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     assert load_asr_config(tmp_path / "nope.toml") == {}
+
+
+def test_models_by_language_is_loaded_and_forwarded(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[asr]\n'
+        'backend = "openai-audio"\n'
+        'language = "zh"\n'
+        '\n'
+        '[asr.http]\n'
+        'url = "http://x/v1/audio/transcriptions"\n'
+        'model = "paraformer-large"\n'
+        '\n'
+        '[asr.http.models_by_language]\n'
+        'zh = "paraformer-large"\n'
+        'en = "sensevoice-small"\n'
+    )
+    merged = load_asr_config(cfg)
+    assert merged["asr_models_by_language"] == {
+        "zh": "paraformer-large",
+        "en": "sensevoice-small",
+    }
+    kwargs = build_pipeline_kwargs(merged)
+    assert kwargs["asr_backend_config"]["models_by_language"] == {
+        "zh": "paraformer-large",
+        "en": "sensevoice-small",
+    }
+
+
+def test_no_models_by_language_leaves_config_clean(tmp_path):
+    cfg = tmp_path / "config.toml"
+    cfg.write_text(
+        '[asr]\n'
+        'backend = "openai-audio"\n'
+        '\n'
+        '[asr.http]\n'
+        'url = "http://x/v1/audio/transcriptions"\n'
+        'model = "paraformer-large"\n'
+    )
+    merged = load_asr_config(cfg)
+    assert "asr_models_by_language" not in merged
+    kwargs = build_pipeline_kwargs(merged)
+    assert "models_by_language" not in kwargs["asr_backend_config"]

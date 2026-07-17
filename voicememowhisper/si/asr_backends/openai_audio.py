@@ -44,6 +44,7 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import re
 import sys
 import time
 import urllib.error
@@ -95,6 +96,21 @@ class OpenAIAudioConfig:
     # Extra multipart fields the server may accept (prompt, temperature,
     # vendor extensions). None values are dropped before sending.
     extra_form_fields: dict[str, str] = field(default_factory=dict)
+    # Language code → model name. A server usually hosts several models
+    # and only some speak a given language; a Chinese-only model handed
+    # language="en" does not error, it just returns Chinese-decoded
+    # nonsense. When ``language`` has an entry here, it selects the
+    # model; otherwise ``model`` is used. See ``resolved_model``.
+    models_by_language: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def resolved_model(self) -> str:
+        """The model to actually ask, after applying the language map."""
+        if self.language and self.models_by_language:
+            picked = self.models_by_language.get(self.language)
+            if picked:
+                return picked
+        return self.model
 
 
 # ───────── multipart encoder (stdlib-only) ─────────────────────────────
@@ -148,6 +164,21 @@ def _encode_multipart(
 # ───────── response mapping ────────────────────────────────────────────
 
 
+# SenseVoice returns "rich transcription" markers inline with the text:
+# <|en|><|NEUTRAL|><|Speech|><|woitn|>. They encode language, emotion,
+# audio event and ITN state. Useful signals, but they are not words —
+# left in, they end up quoted in meeting notes. Strip them here so every
+# model behind this protocol yields plain text. Models that don't emit
+# them (paraformer, whisper) are unaffected: the pattern simply doesn't
+# match.
+_RICH_TOKEN_RE = re.compile(r"<\|[^|>]*\|>")
+
+
+def _clean_text(text: str) -> str:
+    """Drop inline rich-transcription markers and tidy the whitespace."""
+    return " ".join(_RICH_TOKEN_RE.sub(" ", text).split())
+
+
 def _segments_from_openai_response(payload: dict[str, Any]) -> list[contracts.Segment]:
     """Map OpenAI Audio ``verbose_json`` response to ``contracts.Segment``.
 
@@ -166,7 +197,7 @@ def _segments_from_openai_response(payload: dict[str, Any]) -> list[contracts.Se
     words_raw = payload.get("words") or []
 
     if not segments_raw:
-        text = (payload.get("text") or "").strip()
+        text = _clean_text(payload.get("text") or "")
         if not text:
             return []
         duration = float(payload.get("duration") or 0.0)
@@ -205,7 +236,7 @@ def _segments_from_openai_response(payload: dict[str, Any]) -> list[contracts.Se
             contracts.Segment(
                 start=start,
                 end=end,
-                text=str(s.get("text") or "").strip(),
+                text=_clean_text(str(s.get("text") or "")),
                 words=_words_for(start, end),
                 avg_logprob=(
                     float(s["avg_logprob"])
@@ -238,8 +269,9 @@ def transcribe(
     if not audio_path.exists():
         raise FileNotFoundError(f"audio not found: {audio_path}")
 
+    model = config.resolved_model
     fields: dict[str, str] = {
-        "model": config.model,
+        "model": model,
         "response_format": config.response_format,
     }
     if config.language:
@@ -288,7 +320,7 @@ def transcribe(
     transcript = contracts.Transcript(
         recording_id=audio_path.stem,
         backend=BACKEND_ID,
-        model=config.model,
+        model=model,
         language=language,
         duration_sec=duration,
         segments=segments,
@@ -296,6 +328,7 @@ def transcribe(
     raw_info = {
         "protocol": PROTOCOL,
         "url": config.url,
+        "model": model,
         "http_status": status,
         "wall_clock_sec": round(elapsed, 2),
         "response_format": config.response_format,

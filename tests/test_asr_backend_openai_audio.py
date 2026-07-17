@@ -361,3 +361,115 @@ def test_cli_returns_nonzero_on_error(tmp_path: Path, capsys) -> None:
     )
     assert rc == 2
     assert "FileNotFoundError" in capsys.readouterr().err
+
+
+# ───────── per-language model selection ────────────────────────────────
+
+
+def test_resolved_model_picks_by_language() -> None:
+    """A Chinese-only model must not be asked to do English.
+
+    The server accepts language="en" against a Chinese model and returns
+    Chinese-decoded nonsense rather than erroring, so the model itself
+    has to follow the language.
+    """
+    cfg = OpenAIAudioConfig(
+        url="http://x/v1/audio/transcriptions",
+        model="paraformer-large",
+        language="en",
+        models_by_language={"zh": "paraformer-large", "en": "sensevoice-small"},
+    )
+    assert cfg.resolved_model == "sensevoice-small"
+
+
+def test_resolved_model_falls_back_when_language_unmapped() -> None:
+    cfg = OpenAIAudioConfig(
+        url="http://x/v1/audio/transcriptions",
+        model="paraformer-large",
+        language="ja",
+        models_by_language={"en": "sensevoice-small"},
+    )
+    assert cfg.resolved_model == "paraformer-large"
+
+
+def test_resolved_model_without_map_is_plain_model() -> None:
+    cfg = OpenAIAudioConfig(
+        url="http://x/v1/audio/transcriptions",
+        model="paraformer-large",
+        language="en",
+    )
+    assert cfg.resolved_model == "paraformer-large"
+
+
+def test_transcribe_sends_resolved_model(tmp_path: Path) -> None:
+    audio = tmp_path / "clip.wav"
+    audio.write_bytes(b"RIFFfake")
+    cfg = OpenAIAudioConfig(
+        url="http://x/v1/audio/transcriptions",
+        model="paraformer-large",
+        language="en",
+        models_by_language={"en": "sensevoice-small"},
+    )
+    payload = {"text": "hello", "duration": 1.0}
+    captured: dict[str, bytes] = {}
+
+    class _Resp:
+        status = 200
+
+        def read(self) -> bytes:
+            return json.dumps(payload).encode()
+
+        def __enter__(self):  # noqa: ANN204
+            return self
+
+        def __exit__(self, *a: object) -> None:
+            return None
+
+    def _fake_urlopen(req, timeout=None):  # noqa: ANN001, ANN202
+        captured["body"] = req.data
+        return _Resp()
+
+    with mock.patch.object(openai_audio.urllib.request, "urlopen", _fake_urlopen):
+        transcript, raw = transcribe(audio, cfg)
+
+    assert b'name="model"' in captured["body"]
+    assert b"sensevoice-small" in captured["body"]
+    assert b"paraformer-large" not in captured["body"]
+    assert transcript.model == "sensevoice-small"
+    assert raw["model"] == "sensevoice-small"
+
+
+# ───────── rich-transcription token stripping ──────────────────────────
+
+
+def test_clean_text_strips_sensevoice_markers() -> None:
+    raw = (
+        "<|en|><|EMO_UNKNOWN|><|Speech|><|woitn|>the robot arms is just "
+        "moving back and forth <|zh|><|NEUTRAL|><|Speech|><|woitn|>呃"
+    )
+    assert (
+        openai_audio._clean_text(raw)
+        == "the robot arms is just moving back and forth 呃"
+    )
+
+
+def test_clean_text_leaves_plain_text_alone() -> None:
+    assert openai_audio._clean_text("  moving back and forth  ") == (
+        "moving back and forth"
+    )
+
+
+def test_segments_strip_markers() -> None:
+    payload = {
+        "segments": [
+            {"start": 0.0, "end": 2.0, "text": "<|en|><|NEUTRAL|>hello there"},
+        ]
+    }
+    segs = _segments_from_openai_response(payload)
+    assert segs[0].text == "hello there"
+
+
+def test_textonly_response_strips_markers() -> None:
+    payload = {"text": "<|en|><|NEUTRAL|>hello there", "duration": 2.0}
+    segs = _segments_from_openai_response(payload)
+    assert segs[0].text == "hello there"
