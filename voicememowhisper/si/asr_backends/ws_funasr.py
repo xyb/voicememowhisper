@@ -1,7 +1,12 @@
 """ASR backend speaking the aliyun SpeechTranscriber WebSocket protocol.
 
+2026-10-17: the FunASR server this module was written against is retired
+and will be replaced. Do not select ``ws-funasr``. Current ASR uses the
+``openai-audio`` backend; the live URL and model live in the local
+config file, not in this repository.
+
 This is the streaming-WebSocket sibling of ``openai_audio.py``. The two
-backends target the same FunASR aipod server, but at different
+backends were written against the same FunASR server, at different
 endpoints:
 
 - ``openai_audio.py`` → ``POST /v1/audio/transcriptions``: synchronous

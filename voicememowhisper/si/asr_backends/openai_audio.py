@@ -102,6 +102,9 @@ class OpenAIAudioConfig:
     # nonsense. When ``language`` has an entry here, it selects the
     # model; otherwise ``model`` is used. See ``resolved_model``.
     models_by_language: dict[str, str] = field(default_factory=dict)
+    # Language code → full endpoint URL. Use this when models live on
+    # different servers. A language without an entry uses ``url``.
+    urls_by_language: dict[str, str] = field(default_factory=dict)
 
     @property
     def resolved_model(self) -> str:
@@ -111,6 +114,15 @@ class OpenAIAudioConfig:
             if picked:
                 return picked
         return self.model
+
+    @property
+    def resolved_url(self) -> str:
+        """The endpoint to actually call, after applying the language map."""
+        if self.language and self.urls_by_language:
+            picked = self.urls_by_language.get(self.language)
+            if picked:
+                return picked
+        return self.url
 
 
 # ───────── multipart encoder (stdlib-only) ─────────────────────────────
@@ -270,6 +282,7 @@ def transcribe(
         raise FileNotFoundError(f"audio not found: {audio_path}")
 
     model = config.resolved_model
+    url = config.resolved_url
     fields: dict[str, str] = {
         "model": model,
         "response_format": config.response_format,
@@ -291,7 +304,7 @@ def transcribe(
     if config.host_header:
         headers["Host"] = config.host_header
 
-    req = urllib.request.Request(config.url, data=body, headers=headers, method="POST")
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
 
     t0 = time.perf_counter()
     try:
@@ -301,7 +314,7 @@ def transcribe(
     except urllib.error.HTTPError as e:
         err_body = e.read().decode("utf-8", errors="replace")
         raise RuntimeError(
-            f"openai-audio HTTP {e.code} from {config.url}: {err_body[:500]}"
+            f"openai-audio HTTP {e.code} from {url}: {err_body[:500]}"
         ) from e
     elapsed = time.perf_counter() - t0
 
@@ -309,7 +322,7 @@ def transcribe(
         payload = json.loads(raw.decode("utf-8"))
     except json.JSONDecodeError as e:
         raise RuntimeError(
-            f"openai-audio non-JSON response from {config.url}: "
+            f"openai-audio non-JSON response from {url}: "
             f"{raw[:200]!r}"
         ) from e
 

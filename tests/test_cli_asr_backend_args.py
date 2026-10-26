@@ -42,13 +42,19 @@ def _ns(**kw) -> argparse.Namespace:
 
 def test_default_is_faster_whisper_with_no_config() -> None:
     kw = _build_asr_backend_kwargs(_ns())
-    assert kw == {"asr_backend": "faster_whisper"}
+    assert kw == {
+        "asr_backend": "faster_whisper",
+        "diarize_backend": "local_pyannote",
+    }
     assert "asr_backend_config" not in kw
 
 
 def test_explicit_faster_whisper_also_has_no_config() -> None:
     kw = _build_asr_backend_kwargs(_ns(asr_backend="faster_whisper"))
-    assert kw == {"asr_backend": "faster_whisper"}
+    assert kw == {
+        "asr_backend": "faster_whisper",
+        "diarize_backend": "local_pyannote",
+    }
 
 
 def test_openai_audio_populates_config_from_flags() -> None:

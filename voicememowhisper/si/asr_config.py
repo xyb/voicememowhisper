@@ -107,6 +107,13 @@ _WS_KEY_MAP = {
 }
 
 # [diarize.http] → CLI namespace keys.
+_CLI_MODEL_KEY_MAP = {
+    "cli": "asr_cli",
+    "model_path": "asr_model_path",
+    "threads": "asr_threads",
+    "backend": "asr_device_backend",
+}
+
 _DIARIZE_HTTP_KEY_MAP = {
     "url": "diarize_url",
     "api_key": "diarize_api_key",
@@ -186,6 +193,23 @@ def load_asr_config(explicit: str | Path | None = None) -> dict[str, Any]:
             str(lang): str(model) for lang, model in models_by_language.items()
         }
 
+    urls_by_language = http.get("urls_by_language") or {}
+    if urls_by_language:
+        out["asr_urls_by_language"] = {
+            str(lang): str(url) for lang, url in urls_by_language.items()
+        }
+
+    for section, prefix in (
+        ("whisper_cpp", "asr_whisper_cpp_"),
+        ("moss", "asr_moss_"),
+    ):
+        block = asr.get(section) or {}
+        for k, v in block.items():
+            mapped = _CLI_MODEL_KEY_MAP.get(k)
+            if mapped is None:
+                continue
+            out[prefix + mapped.removeprefix("asr_")] = v
+
     ws = asr.get("ws") or {}
     for k, v in ws.items():
         mapped = _WS_KEY_MAP.get(k)
@@ -241,6 +265,8 @@ def build_pipeline_kwargs(merged: dict[str, Any]) -> dict[str, Any]:
                 cfg[http_key] = merged[merged_key]
         if "asr_models_by_language" in merged:
             cfg["models_by_language"] = merged["asr_models_by_language"]
+        if "asr_urls_by_language" in merged:
+            cfg["urls_by_language"] = merged["asr_urls_by_language"]
         kwargs["asr_backend_config"] = cfg
     elif backend in ("ws-funasr", "ws_funasr"):
         wcfg: dict[str, Any] = {}
@@ -259,6 +285,16 @@ def build_pipeline_kwargs(merged: dict[str, Any]) -> dict[str, Any]:
             if merged_key in merged:
                 wcfg[ws_key] = merged[merged_key]
         kwargs["asr_backend_config"] = wcfg
+    elif backend in ("whisper-cpp", "whisper_cpp"):
+        kwargs["asr_backend"] = "whisper-cpp"
+        kwargs["asr_backend_config"] = _cli_model_config(
+            merged, "asr_whisper_cpp_", language_key="language"
+        )
+    elif backend == "moss":
+        kwargs["asr_backend"] = "moss"
+        kwargs["asr_backend_config"] = _cli_model_config(
+            merged, "asr_moss_", language_key="language", include_device=True
+        )
 
     d_backend = merged.get("diarize_backend") or "local_pyannote"
     kwargs["diarize_backend"] = d_backend
@@ -279,3 +315,32 @@ def build_pipeline_kwargs(merged: dict[str, Any]) -> dict[str, Any]:
         kwargs["diarize_backend_config"] = dcfg
 
     return kwargs
+
+
+def _cli_model_config(
+    merged: dict[str, Any],
+    prefix: str,
+    *,
+    language_key: str,
+    include_device: bool = False,
+) -> dict[str, Any]:
+    """Config for a local CLI model. Unset keys stay out so dataclass defaults apply."""
+    cfg: dict[str, Any] = {}
+    model_path = merged.get("asr_model_path") or merged.get(prefix + "model_path")
+    cli = merged.get("asr_cli") or merged.get(prefix + "cli")
+    threads = merged.get("asr_threads")
+    if threads is None:
+        threads = merged.get(prefix + "threads")
+    if model_path:
+        cfg["model_path"] = str(model_path)
+    if cli:
+        cfg["cli"] = str(cli)
+    if threads is not None:
+        cfg["threads"] = int(threads)
+    if language_key in merged and merged[language_key]:
+        cfg["language"] = str(merged[language_key])
+    if include_device:
+        device = merged.get(prefix + "device_backend")
+        if device:
+            cfg["backend"] = str(device)
+    return cfg

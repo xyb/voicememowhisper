@@ -235,6 +235,30 @@ def _clear_held(fd: int) -> None:
         _HELD_FD = None
 
 
+def compute_lock_busy(lock_path: Path | None = None) -> bool:
+    """True when another process holds the heavy-model lock.
+
+    This process's own hold does not count. ``--place auto`` uses that so a
+    run that already took ``single_instance_lock`` is not treated as blocked
+    by itself.
+    """
+    if _HELD_FD is not None:
+        return False
+    path = Path(lock_path) if lock_path is not None else DEFAULT_LOCK_PATH
+    if not path.exists():
+        return False
+    fd = os.open(str(path), os.O_RDWR)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return True
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
 def acquire_compute_lock(lock_path: Path | None = None, *, what: str = "a model") -> None:
     """Serialize heavy ML work machine-wide. Call immediately before loading a
     whisper / pyannote model.

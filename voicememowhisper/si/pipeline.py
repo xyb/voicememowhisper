@@ -182,13 +182,18 @@ def run(
     print(f"[pipeline] audio:     {audio_path}")
     if asr_backend == "faster_whisper":
         print(f"[pipeline] asr:       faster_whisper / {model} (compute_type={compute_type})")
+    elif asr_backend in ("whisper-cpp", "moss"):
+        cfg = asr_backend_config or {}
+        print(f"[pipeline] asr:       {asr_backend} / {cfg.get('model_path', '(default)')}")
     else:
         cfg = asr_backend_config or {}
         cfg_model = cfg.get("model", "?")
         cfg_url = cfg.get("url", "?")
         print(f"[pipeline] asr:       {asr_backend} / {cfg_model} @ {cfg_url}")
     if diarize_backend == "local_pyannote":
-        print(f"[pipeline] diarize:   local_pyannote / community-1")
+        print("[pipeline] diarize:   local_pyannote / community-1")
+    elif diarize_backend == "moss":
+        print("[pipeline] diarize:   moss (same pass as transcription)")
     else:
         dcfg = diarize_backend_config or {}
         print(f"[pipeline] diarize:   {diarize_backend} @ {dcfg.get('url', '?')}")
@@ -200,6 +205,7 @@ def run(
 
     transcript_obj: Optional[contracts.Transcript] = None
     diar_obj: Optional[contracts.Diarization] = None
+    moss_diar: Optional[contracts.Diarization] = None
     identification_obj: Optional[contracts.Identification] = None
     merged_obj: Optional[contracts.MergedTranscript] = None
     md_path: Optional[Path] = None
@@ -296,6 +302,42 @@ def run(
                     f"{raw_info['wall_clock_sec']}s, "
                     f"{_peak_rss_mb():.1f} MB RSS"
                 )
+        elif asr_backend == "whisper-cpp":
+            from .asr_backends.whisper_cpp import (
+                WhisperCppConfig,
+                transcribe as whisper_cpp_transcribe,
+            )
+
+            cfg = WhisperCppConfig(**dict(asr_backend_config or {}))
+            with StageProgress(
+                "transcribe", stage_num=1, total_stages=len(STEPS),
+            ) as prog:
+                prog.note(f"backend=whisper-cpp model={cfg.model_path}")
+                transcript_obj, raw_info = whisper_cpp_transcribe(audio_path, cfg)
+                transcript_obj.to_json(transcript_path)
+                prog.note(
+                    f"{len(transcript_obj.segments)} segments in "
+                    f"{raw_info['wall_clock_sec']}s "
+                    f"({raw_info['times_realtime']}x), "
+                    f"{_peak_rss_mb():.1f} MB RSS"
+                )
+        elif asr_backend == "moss":
+            from .asr_backends.moss import MossConfig, transcribe as moss_transcribe
+
+            cfg = MossConfig(**dict(asr_backend_config or {}))
+            with StageProgress(
+                "transcribe", stage_num=1, total_stages=len(STEPS),
+            ) as prog:
+                prog.note(f"backend=moss model={cfg.model_path}")
+                transcript_obj, moss_diar, raw_info = moss_transcribe(audio_path, cfg)
+                transcript_obj.to_json(transcript_path)
+                prog.note(
+                    f"{len(transcript_obj.segments)} segments, "
+                    f"{moss_diar.num_speakers} speakers in "
+                    f"{raw_info['wall_clock_sec']}s "
+                    f"({raw_info['times_realtime']}x), "
+                    f"{_peak_rss_mb():.1f} MB RSS"
+                )
         else:
             raise ValueError(f"unknown asr_backend: {asr_backend!r}")
         print()
@@ -313,9 +355,15 @@ def run(
                 if p.exists():
                     p.unlink()
         if diarization_path.exists():
-            print(f"{_stage_header(2,'diarize')} cached → {diarization_path}")
-            diar_obj = contracts.Diarization.from_json(diarization_path)
-        elif diarize_backend == "local_pyannote":
+            cached = contracts.Diarization.from_json(diarization_path)
+            if diarize_backend == "moss" and cached.backend != "moss":
+                print(
+                    f"{_stage_header(2,'diarize')} cache is {cached.backend}, not moss"
+                )
+            else:
+                print(f"{_stage_header(2,'diarize')} cached → {diarization_path}")
+                diar_obj = cached
+        if diar_obj is None and diarize_backend == "local_pyannote":
             # pyannote has no linear time-axis the bar can track against,
             # so we leave total=None — the DiarizeProgressHook surfaces
             # sub-step boundaries + per-substep counters instead.
@@ -341,7 +389,7 @@ def run(
                     f"{len(diar_obj.segments)} segments, "
                     f"{_peak_rss_mb():.1f} MB RSS"
                 )
-        elif diarize_backend == "http":
+        elif diar_obj is None and diarize_backend == "http":
             from .diarize_backends import http as mod_diarize_http
 
             cfg_dict = dict(diarize_backend_config or {})
@@ -373,7 +421,20 @@ def run(
                     + (f", wall {wall}s" if wall else "")
                     + (f", infer {infer}s" if infer else "")
                 )
-        else:
+        elif diar_obj is None and diarize_backend == "moss":
+            if moss_diar is None:
+                from .asr_backends.moss import MossConfig, transcribe as moss_transcribe
+
+                cfg = MossConfig(**dict(asr_backend_config or {}))
+                _tr, moss_diar, _raw = moss_transcribe(audio_path, cfg)
+            diar_obj = moss_diar
+            diar_obj.recording_id = recording_id
+            diar_obj.to_json(diarization_path)
+            print(
+                f"{_stage_header(2,'diarize')} moss: "
+                f"{diar_obj.num_speakers} speakers, {len(diar_obj.segments)} segments"
+            )
+        elif diar_obj is None:
             raise ValueError(f"unknown diarize_backend: {diarize_backend!r}")
         print()
     elif 3 <= to_n:
@@ -512,7 +573,7 @@ def run(
     # exists (idempotent).
     if archive and to_n >= 5 and md_path is not None:
         if archive_dir is None:
-            archive_dir = Path.home() / "Documents/VoiceMemoWhisper/Audio"
+            archive_dir = Path.home() / "Documents" / "VoiceMemoWhisper" / "Audio"
         archive_dir = Path(archive_dir)
         try:
             already_archived = audio_path.resolve().is_relative_to(archive_dir.resolve())

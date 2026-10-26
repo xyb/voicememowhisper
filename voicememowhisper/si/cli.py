@@ -35,10 +35,10 @@ from .pipeline import STEPS, STEP_BY_NAME, STEP_BY_NUM, STEP_NAMES, resolve_step
 
 DEFAULT_RUNS = Path.home() / ".local" / "share" / "voicememowhisper" / "speaker-id" / "runs"
 DEFAULT_OUTPUT = Path.home() / ".local" / "share" / "voicememowhisper" / "speaker-id" / "outputs"
-# Speaker library lives with the other durable assets (Audio/ / Transcripts/)
-# so a single backup of ~/Documents/VoiceMemoWhisper/ covers everything that
-# can't be regenerated. runs/outputs stay under ~/.local/share/ — they're
-# cache: rebuildable from speaker-library + the source audio.
+# Speaker library lives with the other durable assets (audio and transcripts)
+# so one backup covers everything that can't be regenerated. runs/outputs
+# stay under ~/.local/share/. They are cache: rebuildable from the library
+# plus the source audio.
 DEFAULT_LIBRARY = Path.home() / "Documents" / "VoiceMemoWhisper" / "speaker-library"
 
 
@@ -91,10 +91,27 @@ def _build_asr_backend_kwargs(args: argparse.Namespace) -> dict:
         "diarize_num_speakers",
         "diarize_min_speakers",
         "diarize_max_speakers",
+        "asr_model_path",
+        "asr_cli",
+        "asr_threads",
     ):
         val = getattr(args, flag, None)
         if val is not None:
             merged[flag] = val
+
+    place = getattr(args, "place", None)
+    if place:
+        from .place import apply_place, read_snapshot
+
+        snapshot = read_snapshot() if place == "auto" else None
+        merged, reason = apply_place(merged, place, snapshot)
+        print(f"[place] {reason}")
+    if (
+        merged.get("asr_backend") == "moss"
+        and getattr(args, "diarize_backend", None) is None
+        and place != "local"
+    ):
+        merged["diarize_backend"] = "moss"
 
     return build_pipeline_kwargs(merged)
 
@@ -1080,7 +1097,7 @@ def _add_common_audio_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--output", help=f"Final outputs directory (default: {DEFAULT_OUTPUT})")
     p.add_argument("--library", help=f"Speaker library directory (default: {DEFAULT_LIBRARY})")
     p.add_argument("--output-transcript",
-                   help="Copy final transcript.md/.txt to this directory (e.g. ~/Documents/VoiceMemoWhisper/Transcripts)")
+                   help="Copy final transcript.md/.txt to this directory")
     p.add_argument("--recording-id", dest="recording_id", default=None,
                    help="Override cache-dir key (default: audio.stem). Use when the "
                         "audio has been archived/renamed but the original runs/<id>/ "
@@ -1097,15 +1114,12 @@ def _add_asr_backend_args(p: argparse.ArgumentParser) -> None:
     """
     p.add_argument(
         "--asr-backend", dest="asr_backend", default=None,
-        choices=["faster_whisper", "openai-audio", "ws-funasr", "ws_funasr"],
+        choices=["faster_whisper", "openai-audio", "ws-funasr", "ws_funasr", "whisper-cpp", "moss"],
         help="Stage-1 transcription backend. 'openai-audio' routes to "
-             "any OpenAI Audio API compatible server (OpenAI Whisper, "
-             "a self-hosted FunASR slim, groq, ...) — see --asr-url / "
-             "--asr-model. 'ws-funasr' streams PCM to a funasr-aipod "
-             "WebSocket endpoint (aliyun SpeechTranscriber protocol) "
-             "with idle-timer monitoring, no hard wall-clock timeout — "
-             "see --asr-ws-url. Reads from "
-             "~/.config/voicememowhisper/config.toml if present; falls "
+             "any OpenAI Audio API compatible server. 'whisper-cpp' runs "
+             "a local ggml model via whisper-cli. 'moss' runs a local MOSS "
+             "GGUF via transcribe-cli and also supplies speaker segments. "
+             "Reads ~/.config/voicememowhisper/config.toml if present; falls "
              "back to 'faster_whisper' if neither flag nor config sets it.",
     )
     p.add_argument("--asr-config", dest="asr_config", default=None,
@@ -1128,6 +1142,22 @@ def _add_asr_backend_args(p: argparse.ArgumentParser) -> None:
                    help="openai-audio response format (default: verbose_json)")
     p.add_argument("--asr-timeout-sec", dest="asr_timeout_sec", type=float, default=None,
                    help="openai-audio per-request timeout in seconds (default: 600)")
+    p.add_argument("--asr-model-path", dest="asr_model_path", default=None,
+                   help="Local model file for whisper-cpp or moss")
+    p.add_argument("--asr-cli", dest="asr_cli", default=None,
+                   help="whisper-cli or transcribe-cli executable")
+    p.add_argument("--asr-threads", dest="asr_threads", type=int, default=None,
+                   help="CPU threads for whisper-cpp or moss (default: 4)")
+    p.add_argument(
+        "--place",
+        choices=["auto", "local", "remote"],
+        default=None,
+        help="Where to run. auto keeps remote transcription and moves "
+             "diarization onto this Mac only when it is on AC power, the "
+             "battery is at least 80 percent, 8 GB is free, and the CPU is "
+             "not already busy. local uses whisper.cpp and local pyannote. "
+             "remote uses the servers in the config file.",
+    )
     # ws-funasr knobs. Kept under their own --asr-ws-* namespace so they
     # don't collide with the HTTP-backend flags above — a user with both
     # [asr.http] and [asr.ws] in config can switch backends without the
@@ -1152,7 +1182,7 @@ def _add_asr_backend_args(p: argparse.ArgumentParser) -> None:
                         "intake buffer and the connection drops (or send() "
                         "write-times-out under TCP backpressure) mid-stream on "
                         "long recordings. 1.2 s keeps the send rate well under "
-                        "realtime with ~100% headroom for network jitter. Lower "
+                        "realtime with about 100 percent headroom for network jitter. Lower "
                         "only for short clips that finish before the buffer fills.")
 
 
@@ -1165,10 +1195,10 @@ def _add_diarize_backend_args(p: argparse.ArgumentParser) -> None:
     """
     p.add_argument(
         "--diarize-backend", dest="diarize_backend", default=None,
-        choices=["local_pyannote", "http"],
-        help="Stage-2 diarization backend. 'http' calls the self-hosted "
-             "pyannote service (~12× faster on GPU). Reads from config "
-             "file if present; falls back to 'local_pyannote' otherwise.",
+        choices=["local_pyannote", "http", "moss"],
+        help="Stage-2 diarization backend. 'http' calls the configured "
+             "service. 'moss' uses speaker segments from a moss "
+             "transcription. 'local_pyannote' runs on this machine.",
     )
     p.add_argument("--diarize-url", dest="diarize_url", default=None,
                    help="diarize service endpoint URL "
@@ -1270,10 +1300,10 @@ def build_parser() -> argparse.ArgumentParser:
     sla.add_argument("speaker", help="Speaker id (directory name under the library)")
     sla.add_argument("clip", help="Path to a .wav (or .m4a) clip to enroll")
     sla.add_argument("--display-name", dest="display_name",
-                     help="Human-readable name written into profile.json (e.g. '徐子悠'). "
+                     help="Human-readable name written into profile.json (e.g. 'Alex'). "
                           "Only applied on first enrollment — existing profile.json is preserved.")
     sla.add_argument("--alias", action="append", default=None,
-                     help="Alias for the speaker; repeat to add multiple (e.g. --alias 'Ziyou Xu' --alias ziyou).")
+                     help="Alias for the speaker; repeat to add multiple (e.g. --alias 'A. Example' --alias alex).")
     sla.add_argument("--notes", default=None,
                      help="Notes written into profile.json on first enrollment "
                           "(evidence chain, clip sources, etc).")

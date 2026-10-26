@@ -1,5 +1,10 @@
 # ASR Backends
 
+The default remote model remains `paraformer-large`. Do not change that
+default to another model: the results are not interchangeable.
+`sensevoice-small` is the English model only. `ws-funasr` is not the
+default. Live URLs belong in the operator's local config, not here.
+
 The speaker-id pipeline's transcription stage is pluggable. Different
 ASR models have very different strengths — Whisper's English is better
 than its Chinese, Paraformer's Chinese business terms are better than
@@ -24,12 +29,23 @@ Two dimensions, independent:
 Currently shipped:
 
 - **`faster_whisper`** (local Python): the existing default. Lives in
-  `voicememowhisper/si/transcribe.py`. Migration into `asr_backends/`
-  is a later commit; today it's unchanged.
+  `voicememowhisper/si/transcribe.py`.
 - **`openai_audio_http`** (HTTP, `openai-audio` protocol): works with
-  any server that implements `POST /v1/audio/transcriptions` with
-  `multipart/form-data` — OpenAI Whisper, a self-hosted FunASR slim,
-  groq, deepinfra, and any compatible proxy.
+  any server that implements `POST /v1/audio/transcriptions`.
+- **`whisper-cpp`**: local ggml file via `whisper-cli`. Default model
+  path is the Vimpo `ggml-large-v3-turbo-q5_0.bin` when that file is
+  present. Override with `--asr-model-path` or `[asr.whisper_cpp]`.
+- **`moss`**: local MOSS GGUF via `transcribe-cli`. The same pass
+  returns anonymous speaker ids, so diarization is not a second model.
+  Those ids are not speaker-library names. `transcribe-cli` must be on
+  `PATH` or passed with `--asr-cli`.
+
+`--place auto|local|remote` is accepted by `voicememo-whisper` and
+`voicememo-whisper si run`. `auto` keeps the configured transcription
+server and moves only diarization onto this machine when it is on AC
+power, the battery is at least 80 percent, 8 GB is free, and the CPU
+is not already busy. `local` selects whisper.cpp plus local pyannote.
+`remote` keeps the config file. See `si/place.py`.
 
 Wired into `pipeline.run()` and `voicememo-whisper si run`. Pass
 `--asr-backend openai-audio` plus `--asr-url` / `--asr-model` to
@@ -152,7 +168,7 @@ memory, not the filename.
 | Field | Required | Notes |
 |---|---|---|
 | `url` | yes | Full endpoint. Different vendors use different paths. |
-| `model` | yes | Server-specific. `whisper-1` (OpenAI), `paraformer-large` / `sensevoice-small` / `fun-asr-nano` (FunASR slim). |
+| `model` | yes | Server-specific. Default is `paraformer-large`. English uses `sensevoice-small`. Do not replace the default with the English model. |
 | `api_key` | no | Becomes `Authorization: Bearer <key>`. Omit for no-auth self-hosted servers. |
 | `host_header` | no | Overrides the `Host` header. Needed when routing via a reverse proxy (Traefik / nginx / Caddy) that dispatches on hostname. |
 | `language` | no | Default `"zh"`. Set to `None` to let the server auto-detect. |

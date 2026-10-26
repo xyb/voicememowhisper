@@ -10,8 +10,10 @@ Current backends:
   stays in ``voicememowhisper.si.transcribe`` for now to avoid churn;
   will migrate here in a later commit.
 - ``openai_audio`` (this package): HTTP client for any service that
-  speaks the OpenAI Audio API — OpenAI Whisper, FunASR slim, groq,
-  deepinfra, or any compatible proxy. The protocol name is ``openai-audio``.
+  speaks the OpenAI Audio API. The protocol name is ``openai-audio``.
+- ``whisper_cpp``: ``whisper-cli`` plus a ggml model file.
+- ``moss``: ``transcribe-cli`` plus a MOSS GGUF. Also returns speaker
+  segments.
 
 Adding a new protocol (deepgram / azure-stt / aliyun-nls / ...) means
 adding a sibling module here with its own request/response adapter.

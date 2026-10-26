@@ -101,14 +101,15 @@ class SpeakerPipeline:
 
         from .si.pipeline import run as run_pipeline
         from .si.asr_config import load_asr_config, build_pipeline_kwargs
+        from .si.place import apply_place, read_snapshot
 
-        # Load the same TOML config the `si run` CLI uses. Without this
-        # the watcher-driven main flow would silently fall back to the
-        # built-in defaults (faster_whisper + local_pyannote) and run
-        # heavy ML locally, bypassing any self-hosted HTTP backends the
-        # user configured. Precedence is TOML only — no CLI overlay
-        # here; if you want per-run overrides, use `si run ... --asr-*`.
-        backend_kwargs = build_pipeline_kwargs(load_asr_config())
+        merged = load_asr_config()
+        place = getattr(self.settings, "place", None)
+        if place:
+            snapshot = read_snapshot() if place == "auto" else None
+            merged, reason = apply_place(merged, place, snapshot)
+            LOGGER.info("place %s: %s", place, reason, extra={"verbosity": 0})
+        backend_kwargs = build_pipeline_kwargs(merged)
 
         t0 = time.monotonic()
         run_pipeline(

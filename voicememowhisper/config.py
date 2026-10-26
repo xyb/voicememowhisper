@@ -150,13 +150,11 @@ class Settings:
     speaker_pipeline_enabled: bool = os.environ.get("VOICE_MEMO_SPEAKER_PIPELINE", "1") == "1"
     speaker_pipeline_model: str = os.environ.get("VOICE_MEMO_SPEAKER_PIPELINE_MODEL", "medium")
     speaker_pipeline_threshold: float = float(os.environ.get("VOICE_MEMO_SPEAKER_PIPELINE_THRESHOLD", "0.55"))
-    # Speaker library lives alongside Audio/ and Transcripts/ under
-    # ~/Documents/VoiceMemoWhisper/ — it's the only durable, hand-curated
-    # data in the pipeline (enrollment clips + profiles with evidence
-    # chains), so it belongs with the other long-term assets and rides
-    # whatever user-level backup already covers ~/Documents/. Stage
-    # intermediates and render outputs stay under ~/.local/share/ since
-    # they are cache (rebuildable from library + audio).
+    # Speaker library lives alongside the audio and transcript directories.
+    # It is the durable, hand-curated data in the pipeline (enrollment
+    # clips and profiles), so it belongs with the other long-term assets.
+    # Stage intermediates and render outputs stay under ~/.local/share/
+    # since they are cache (rebuildable from the library and the audio).
     speaker_library_dir: Path = _env_path(
         "VOICE_MEMO_SPEAKER_LIBRARY_DIR",
         Path.home() / "Documents" / "VoiceMemoWhisper" / "speaker-library",
@@ -169,6 +167,8 @@ class Settings:
         "VOICE_MEMO_SPEAKER_OUTPUT_DIR",
         Path.home() / ".local" / "share" / "voicememowhisper" / "speaker-id" / "outputs",
     )
+    # None keeps the config file's servers. auto/local/remote: see si/place.py.
+    place: str | None = None
 
 
 def load_settings() -> Settings:

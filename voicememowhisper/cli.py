@@ -139,6 +139,8 @@ def build_settings(args: argparse.Namespace) -> Settings:
         overrides["language"] = args.language
     if args.newest_first is not None:
         overrides["processing_order"] = "newest-first" if args.newest_first else "oldest-first"
+    if getattr(args, "place", None):
+        overrides["place"] = args.place
     
     if args.transcript_dir:
         overrides["transcript_dir"] = Path(args.transcript_dir).expanduser()
@@ -402,6 +404,15 @@ def main(argv: list[str] | None = None) -> int:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Process backlog newest first (disable for oldest first). Default: true.",
+    )
+    parser.add_argument(
+        "--place",
+        choices=["auto", "local", "remote"],
+        default=None,
+        help="Where heavy steps run. auto keeps remote transcription and moves "
+             "diarization onto this Mac only when it is on AC power, the battery "
+             "is at least 80 percent, 8 GB is free, and the CPU is not already busy. "
+             "local uses whisper.cpp and local pyannote. remote uses the config file.",
     )
 
     args = parser.parse_args(raw_argv)
