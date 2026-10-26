@@ -184,7 +184,7 @@ def run(
         print(f"[pipeline] asr:       faster_whisper / {model} (compute_type={compute_type})")
     elif asr_backend in ("whisper-cpp", "moss"):
         cfg = asr_backend_config or {}
-        print(f"[pipeline] asr:       {asr_backend} / {cfg.get('model_path', '(default)')}")
+        print(f"[pipeline] asr:       {asr_backend} / {cfg.get('model_path') or '(model path not set)'}")
     else:
         cfg = asr_backend_config or {}
         cfg_model = cfg.get("model", "?")

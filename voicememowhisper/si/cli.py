@@ -1143,7 +1143,7 @@ def _add_asr_backend_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--asr-timeout-sec", dest="asr_timeout_sec", type=float, default=None,
                    help="openai-audio per-request timeout in seconds (default: 600)")
     p.add_argument("--asr-model-path", dest="asr_model_path", default=None,
-                   help="Local model file for whisper-cpp or moss")
+                   help="Local model file for whisper-cpp or moss. Required for those backends.")
     p.add_argument("--asr-cli", dest="asr_cli", default=None,
                    help="whisper-cli or transcribe-cli executable")
     p.add_argument("--asr-threads", dest="asr_threads", type=int, default=None,

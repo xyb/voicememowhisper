@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 
-from voicememowhisper.si.asr_backends.moss import parse_moss_output
-from voicememowhisper.si.asr_backends.whisper_cpp import parse_whisper_json
+import pytest
+
+from voicememowhisper.si.asr_backends.moss import MossConfig, parse_moss_output, transcribe as moss_transcribe
+from voicememowhisper.si.asr_backends.whisper_cpp import WhisperCppConfig, parse_whisper_json, transcribe as whisper_transcribe
 from voicememowhisper.si.asr_config import build_pipeline_kwargs, load_asr_config
 from voicememowhisper.si.cli import _build_asr_backend_kwargs
 from voicememowhisper.si.place import (
@@ -23,7 +25,7 @@ def test_parse_whisper_json_uses_offsets() -> None:
             "transcription": [
                 {
                     "offsets": {"from": 530, "to": 1610},
-                    "text": " 重复一下 ",
+                    "text": " 示例句子 ",
                 }
             ],
         }
@@ -31,19 +33,19 @@ def test_parse_whisper_json_uses_offsets() -> None:
     assert language == "zh"
     assert duration == 1.61
     assert segments[0].start == 0.53
-    assert segments[0].text == "重复一下"
+    assert segments[0].text == "示例句子"
 
 
 def test_parse_moss_output_keeps_speaker_ids() -> None:
     text = """
 [info] timings: load=186.40 ms
   duration:   5.000 s
-  [   0.53 ->    1.61] S1: 重复一下了可能。
-  [   1.68 ->    2.12] S2: 嗯。
+  [   0.53 ->    1.61] S1: 示例句子一。
+  [   1.68 ->    2.12] S2: 示例句子二。
 """
     segments, speakers, duration = parse_moss_output(text)
     assert duration == 5.0
-    assert [s.text for s in segments] == ["重复一下了可能。", "嗯。"]
+    assert [s.text for s in segments] == ["示例句子一。", "示例句子二。"]
     assert [s.label for s in speakers] == ["S1", "S2"]
 
 
@@ -152,6 +154,15 @@ def test_auto_ready_moves_only_diarize() -> None:
     assert merged["asr_backend"] == "openai-audio"
     assert merged["diarize_backend"] == "local_pyannote"
     assert "diarize on this Mac" in reason
+
+
+def test_local_backends_reject_a_missing_model_path(tmp_path) -> None:
+    audio = tmp_path / "clip.wav"
+    audio.write_bytes(b"not-audio")
+    with pytest.raises(ValueError, match=r"\[asr.whisper_cpp\]"):
+        whisper_transcribe(audio, WhisperCppConfig())
+    with pytest.raises(ValueError, match=r"\[asr.moss\]"):
+        moss_transcribe(audio, MossConfig())
 
 
 def test_place_local_selects_whisper_cpp() -> None:

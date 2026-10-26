@@ -4,9 +4,9 @@ This runs a MOSS GGUF. With ``--diarize`` the same pass returns anonymous
 speaker ids. Those ids are not speaker-library names. The identify stage
 can still embed the spans afterwards.
 
-``transcribe-cli`` is not installed system-wide. The 2026-10-26 build lives
-at ``/tmp/transcribe.cpp/build/bin/transcribe-cli`` until it is installed
-or passed in ``cli``.
+Pass the model file with ``--asr-model-path`` or ``[asr.moss] model_path``.
+``transcribe-cli`` must be on ``PATH`` or passed in ``cli``. There is no
+built-in model location or executable path.
 """
 
 from __future__ import annotations
@@ -24,12 +24,6 @@ from ..._lock import acquire_compute_lock
 from .. import contracts
 
 BACKEND_ID = "moss"
-DEFAULT_MODEL = (
-    Path.home()
-    / "Library/Application Support/Vimpo/models"
-    / "MOSS-Transcribe-Diarize-Q5_K_M.gguf"
-)
-_BUILT_CLI = Path("/tmp/transcribe.cpp/build/bin/transcribe-cli")
 _SEGMENT = re.compile(
     r"\[\s*([0-9]+(?:\.[0-9]+)?)\s*->\s*([0-9]+(?:\.[0-9]+)?)\]"
     r"\s*(S\d+)\s*:\s*(.*\S)\s*$"
@@ -39,7 +33,7 @@ _DURATION = re.compile(r"duration:\s*([0-9]+(?:\.[0-9]+)?)\s*s")
 
 @dataclass
 class MossConfig:
-    model_path: str = str(DEFAULT_MODEL)
+    model_path: str = ""
     cli: str = "transcribe-cli"
     language: str = "zh"
     threads: int = 4
@@ -50,11 +44,8 @@ class MossConfig:
 def resolve_cli(cli: str) -> str:
     if Path(cli).exists() or shutil.which(cli):
         return cli
-    if cli == "transcribe-cli" and _BUILT_CLI.exists():
-        return str(_BUILT_CLI)
     raise FileNotFoundError(
-        f"transcribe-cli not found ({cli}). "
-        f"Build transcribe.cpp or pass cli=."
+        f"transcribe-cli not found ({cli}). Install it or pass --asr-cli."
     )
 
 
@@ -107,11 +98,16 @@ def transcribe(
     audio_path: Path,
     config: MossConfig,
 ) -> tuple[contracts.Transcript, contracts.Diarization, dict[str, Any]]:
-    if not audio_path.exists():
-        raise FileNotFoundError(f"audio not found: {audio_path}")
+    if not str(config.model_path or "").strip():
+        raise ValueError(
+            "MOSS model path is required. Pass --asr-model-path or set "
+            "[asr.moss] model_path in the config file."
+        )
     model = Path(config.model_path).expanduser()
     if not model.exists():
         raise FileNotFoundError(f"MOSS model not found: {model}")
+    if not audio_path.exists():
+        raise FileNotFoundError(f"audio not found: {audio_path}")
     cli = resolve_cli(config.cli)
 
     acquire_compute_lock(what=f"MOSS ({model.name})")

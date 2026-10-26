@@ -32,13 +32,14 @@ Currently shipped:
   `voicememowhisper/si/transcribe.py`.
 - **`openai_audio_http`** (HTTP, `openai-audio` protocol): works with
   any server that implements `POST /v1/audio/transcriptions`.
-- **`whisper-cpp`**: local ggml file via `whisper-cli`. Default model
-  path is the Vimpo `ggml-large-v3-turbo-q5_0.bin` when that file is
-  present. Override with `--asr-model-path` or `[asr.whisper_cpp]`.
-- **`moss`**: local MOSS GGUF via `transcribe-cli`. The same pass
-  returns anonymous speaker ids, so diarization is not a second model.
-  Those ids are not speaker-library names. `transcribe-cli` must be on
-  `PATH` or passed with `--asr-cli`.
+- **`whisper-cpp`**: local ggml file via `whisper-cli`. The model file
+  is required: `--asr-model-path` or `[asr.whisper_cpp] model_path`.
+  There is no built-in path.
+- **`moss`**: local MOSS GGUF via `transcribe-cli`. The model file is
+  required the same way, under `[asr.moss]` or `--asr-model-path`. The
+  same pass returns anonymous speaker ids, so diarization is not a
+  second model. Those ids are not speaker-library names.
+  `transcribe-cli` must be on `PATH` or passed with `--asr-cli`.
 
 `--place auto|local|remote` is accepted by `voicememo-whisper` and
 `voicememo-whisper si run`. `auto` keeps the configured transcription

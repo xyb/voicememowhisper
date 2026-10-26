@@ -1,7 +1,8 @@
 """ASR backend that shells out to whisper.cpp's ``whisper-cli``.
 
 The model file is a ggml bin, not a faster-whisper or WhisperKit model.
-The Vimpo download ``ggml-large-v3-turbo-q5_0.bin`` is the default path.
+Pass the file with ``--asr-model-path`` or ``[asr.whisper_cpp] model_path``.
+There is no built-in model location.
 """
 
 from __future__ import annotations
@@ -19,15 +20,11 @@ from ..._lock import acquire_compute_lock
 from .. import contracts
 
 BACKEND_ID = "whisper_cpp"
-DEFAULT_MODEL = (
-    Path.home()
-    / "Library/Application Support/Vimpo/models/ggml-large-v3-turbo-q5_0.bin"
-)
 
 
 @dataclass
 class WhisperCppConfig:
-    model_path: str = str(DEFAULT_MODEL)
+    model_path: str = ""
     cli: str = "whisper-cli"
     language: str = "zh"
     threads: int = 4
@@ -75,11 +72,16 @@ def transcribe(
     audio_path: Path,
     config: WhisperCppConfig,
 ) -> tuple[contracts.Transcript, dict[str, Any]]:
-    if not audio_path.exists():
-        raise FileNotFoundError(f"audio not found: {audio_path}")
+    if not str(config.model_path or "").strip():
+        raise ValueError(
+            "whisper.cpp model path is required. Pass --asr-model-path or set "
+            "[asr.whisper_cpp] model_path in the config file."
+        )
     model = Path(config.model_path).expanduser()
     if not model.exists():
         raise FileNotFoundError(f"whisper.cpp model not found: {model}")
+    if not audio_path.exists():
+        raise FileNotFoundError(f"audio not found: {audio_path}")
     cli = config.cli
     if shutil.which(cli) is None and not Path(cli).exists():
         raise FileNotFoundError(
