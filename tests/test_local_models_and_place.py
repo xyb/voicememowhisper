@@ -6,8 +6,18 @@ import argparse
 
 import pytest
 
-from voicememowhisper.si.asr_backends.moss import MossConfig, parse_moss_output, transcribe as moss_transcribe
-from voicememowhisper.si.asr_backends.whisper_cpp import WhisperCppConfig, parse_whisper_json, transcribe as whisper_transcribe
+from voicememowhisper.si.asr_backends.moss import (
+    MossConfig,
+    download_hint as moss_download_hint,
+    parse_moss_output,
+    transcribe as moss_transcribe,
+)
+from voicememowhisper.si.asr_backends.whisper_cpp import (
+    WhisperCppConfig,
+    download_hint as whisper_download_hint,
+    parse_whisper_json,
+    transcribe as whisper_transcribe,
+)
 from voicememowhisper.si.asr_config import build_pipeline_kwargs, load_asr_config
 from voicememowhisper.si.cli import _build_asr_backend_kwargs
 from voicememowhisper.si.place import (
@@ -156,13 +166,50 @@ def test_auto_ready_moves_only_diarize() -> None:
     assert "diarize on this Mac" in reason
 
 
+def test_run_help_names_the_older_models() -> None:
+    import argparse
+
+    from voicememowhisper.si.cli import build_parser
+
+    parser = build_parser()
+    text = ""
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            text = action.choices["run"].format_help()
+            break
+    assert "hf download Systran/faster-whisper-medium" in text
+    assert "hf download argmaxinc/whisperkit-coreml" in text
+    assert "hf download pyannote/speaker-diarization-community-1" in text
+    assert "hf download ggerganov/whisper.cpp" in text
+    assert "hf download handy-computer/MOSS-Transcribe-Diarize-gguf" in text
+    assert text.count("HF_ENDPOINT=https://hf-mirror.com") == 1
+    assert "does not download them" in text
+
+
+def test_download_hints_are_commands() -> None:
+    whisper = whisper_download_hint()
+    moss = moss_download_hint()
+    command = "HF_ENDPOINT=https://hf-mirror.com"
+    assert "hf download ggerganov/whisper.cpp ggml-large-v3-turbo-q5_0.bin --local-dir ." in whisper
+    assert "hf download handy-computer/MOSS-Transcribe-Diarize-gguf MOSS-Transcribe-Diarize-Q5_K_M.gguf --local-dir ." in moss
+    assert command in whisper
+    assert command in moss
+
+
 def test_local_backends_reject_a_missing_model_path(tmp_path) -> None:
     audio = tmp_path / "clip.wav"
     audio.write_bytes(b"not-audio")
-    with pytest.raises(ValueError, match=r"\[asr.whisper_cpp\]"):
+    with pytest.raises(ValueError, match=r"hf download") as whisper_err:
         whisper_transcribe(audio, WhisperCppConfig())
-    with pytest.raises(ValueError, match=r"\[asr.moss\]"):
+    assert "ggerganov/whisper.cpp" in str(whisper_err.value)
+    with pytest.raises(ValueError, match=r"hf download") as moss_err:
         moss_transcribe(audio, MossConfig())
+    assert "MOSS-Transcribe-Diarize-gguf" in str(moss_err.value)
+    missing = tmp_path / "missing.bin"
+    with pytest.raises(FileNotFoundError, match=r"hf download"):
+        whisper_transcribe(audio, WhisperCppConfig(model_path=str(missing)))
+    with pytest.raises(FileNotFoundError, match=r"hf download"):
+        moss_transcribe(audio, MossConfig(model_path=str(missing)))
 
 
 def test_place_local_selects_whisper_cpp() -> None:

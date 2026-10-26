@@ -20,6 +20,11 @@ adding a sibling module here with its own request/response adapter.
 The public surface is just ``transcribe(audio_path, config) -> Transcript``.
 """
 
+MIRROR_HINT = (
+    "If huggingface.co is hard to reach, prefix the command with "
+    "HF_ENDPOINT=https://hf-mirror.com."
+)
+
 # Submodules are imported on demand. Avoid top-level re-exports here so
 # ``python -m voicememowhisper.si.asr_backends.openai_audio`` doesn't
 # trigger the "found in sys.modules after import of package" runtime

@@ -24,6 +24,27 @@ from ..._lock import acquire_compute_lock
 from .. import contracts
 
 BACKEND_ID = "moss"
+MODEL_REPO = "handy-computer/MOSS-Transcribe-Diarize-gguf"
+MODEL_NAME = "MOSS-Transcribe-Diarize-Q5_K_M.gguf"
+MODEL_BYTES = 700_314_304
+
+
+def download_hint(*, mirror: bool = True) -> str:
+    """Tell a user who has no MOSS GGUF where to get one, and the command to run."""
+    from . import MIRROR_HINT
+
+    text = (
+        f"No model file is included. Download {MODEL_NAME} ({MODEL_BYTES:,} bytes):\n"
+        f"  hf download {MODEL_REPO} {MODEL_NAME} --local-dir .\n"
+        f"  https://huggingface.co/{MODEL_REPO}\n"
+        "Pass the saved file with --asr-model-path or [asr.moss] model_path. "
+        "transcribe-cli must be on PATH or passed with --asr-cli."
+    )
+    if mirror:
+        text += "\n" + MIRROR_HINT
+    return text
+
+
 _SEGMENT = re.compile(
     r"\[\s*([0-9]+(?:\.[0-9]+)?)\s*->\s*([0-9]+(?:\.[0-9]+)?)\]"
     r"\s*(S\d+)\s*:\s*(.*\S)\s*$"
@@ -101,11 +122,12 @@ def transcribe(
     if not str(config.model_path or "").strip():
         raise ValueError(
             "MOSS model path is required. Pass --asr-model-path or set "
-            "[asr.moss] model_path in the config file."
+            "[asr.moss] model_path in the config file.\n"
+            + download_hint()
         )
     model = Path(config.model_path).expanduser()
     if not model.exists():
-        raise FileNotFoundError(f"MOSS model not found: {model}")
+        raise FileNotFoundError(f"MOSS model not found: {model}\n{download_hint()}")
     if not audio_path.exists():
         raise FileNotFoundError(f"audio not found: {audio_path}")
     cli = resolve_cli(config.cli)

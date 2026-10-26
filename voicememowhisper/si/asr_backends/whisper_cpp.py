@@ -20,6 +20,24 @@ from ..._lock import acquire_compute_lock
 from .. import contracts
 
 BACKEND_ID = "whisper_cpp"
+MODEL_REPO = "ggerganov/whisper.cpp"
+MODEL_NAME = "ggml-large-v3-turbo-q5_0.bin"
+MODEL_BYTES = 574_041_195
+
+
+def download_hint(*, mirror: bool = True) -> str:
+    """Tell a user who has no ggml file where to get one, and the command to run."""
+    from . import MIRROR_HINT
+
+    text = (
+        f"No model file is included. Download {MODEL_NAME} ({MODEL_BYTES:,} bytes):\n"
+        f"  hf download {MODEL_REPO} {MODEL_NAME} --local-dir .\n"
+        f"  https://huggingface.co/{MODEL_REPO}\n"
+        "Pass the saved file with --asr-model-path or [asr.whisper_cpp] model_path."
+    )
+    if mirror:
+        text += "\n" + MIRROR_HINT
+    return text
 
 
 @dataclass
@@ -75,11 +93,14 @@ def transcribe(
     if not str(config.model_path or "").strip():
         raise ValueError(
             "whisper.cpp model path is required. Pass --asr-model-path or set "
-            "[asr.whisper_cpp] model_path in the config file."
+            "[asr.whisper_cpp] model_path in the config file.\n"
+            + download_hint()
         )
     model = Path(config.model_path).expanduser()
     if not model.exists():
-        raise FileNotFoundError(f"whisper.cpp model not found: {model}")
+        raise FileNotFoundError(
+            f"whisper.cpp model not found: {model}\n{download_hint()}"
+        )
     if not audio_path.exists():
         raise FileNotFoundError(f"audio not found: {audio_path}")
     cli = config.cli

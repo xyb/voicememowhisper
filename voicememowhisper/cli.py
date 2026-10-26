@@ -363,7 +363,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--watch", action="store_true", help="Keep running and watch for new recordings.")
     parser.add_argument(
-        "--model", help="WhisperKit model identifier (default from env or 'large-v3-v20240930_turbo')."
+        "--model",
+        help="WhisperKit model identifier (default from env or "
+             "'large-v3-v20240930_turbo'). The first transcribe downloads it. "
+             "To fetch it first, see the hf download command in docs/asr-backends.md.",
     )
     parser.add_argument("--language", help="Language hint for Whisper (e.g. 'en', 'zh').")
     parser.add_argument("-l", "--list", action="store_true", help="List available recordings and exit.")

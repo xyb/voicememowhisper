@@ -1142,8 +1142,34 @@ def _add_asr_backend_args(p: argparse.ArgumentParser) -> None:
                    help="openai-audio response format (default: verbose_json)")
     p.add_argument("--asr-timeout-sec", dest="asr_timeout_sec", type=float, default=None,
                    help="openai-audio per-request timeout in seconds (default: 600)")
-    p.add_argument("--asr-model-path", dest="asr_model_path", default=None,
-                   help="Local model file for whisper-cpp or moss. Required for those backends.")
+    from .asr_backends.moss import download_hint as moss_download_hint
+    from .asr_backends.whisper_cpp import download_hint as whisper_download_hint
+
+    p.add_argument(
+        "--asr-model-path", dest="asr_model_path", default=None,
+        help="Local model file for whisper-cpp or moss. Required for those backends. "
+             "The download commands are at the end of this help, and are printed "
+             "again if the file is missing.",
+    )
+    from .asr_backends import MIRROR_HINT
+
+    p.formatter_class = argparse.RawDescriptionHelpFormatter
+    download_epilog = "\n\n".join([
+        whisper_download_hint(mirror=False),
+        moss_download_hint(mirror=False),
+        "faster-whisper, default medium. The first run downloads it. To fetch it first:\n"
+        "  hf download Systran/faster-whisper-medium\n"
+        "  https://huggingface.co/Systran/faster-whisper-medium\n"
+        "WhisperKit, default large-v3-v20240930_turbo. The first transcribe downloads it. To fetch it first:\n"
+        "  hf download argmaxinc/whisperkit-coreml --include \"openai_whisper-large-v3-v20240930_turbo/*\"\n"
+        "  https://huggingface.co/argmaxinc/whisperkit-coreml\n"
+        "pyannote, pyannote/speaker-diarization-community-1. Accept the conditions on the model page, then hf auth login. The first local diarize downloads it. To fetch the pipeline repo first:\n"
+        "  hf download pyannote/speaker-diarization-community-1\n"
+        "  https://huggingface.co/pyannote/speaker-diarization-community-1\n"
+        "paraformer-large and sensevoice-small stay on the configured server. This program does not download them.\n"
+        + MIRROR_HINT,
+    ])
+    p.epilog = (p.epilog + "\n\n" + download_epilog) if p.epilog else download_epilog
     p.add_argument("--asr-cli", dest="asr_cli", default=None,
                    help="whisper-cli or transcribe-cli executable")
     p.add_argument("--asr-threads", dest="asr_threads", type=int, default=None,

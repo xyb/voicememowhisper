@@ -34,12 +34,75 @@ Currently shipped:
   any server that implements `POST /v1/audio/transcriptions`.
 - **`whisper-cpp`**: local ggml file via `whisper-cli`. The model file
   is required: `--asr-model-path` or `[asr.whisper_cpp] model_path`.
-  There is no built-in path.
+  There is no built-in path. A missing file prints an `hf download` command.
 - **`moss`**: local MOSS GGUF via `transcribe-cli`. The model file is
   required the same way, under `[asr.moss]` or `--asr-model-path`. The
   same pass returns anonymous speaker ids, so diarization is not a
   second model. Those ids are not speaker-library names.
   `transcribe-cli` must be on `PATH` or passed with `--asr-cli`.
+  A missing file prints an `hf download` command.
+
+## Models
+
+`si run --help` prints these same commands. Every local model uses
+`hf download`. If `huggingface.co` is hard to reach, prefix the command
+with `HF_ENDPOINT=https://hf-mirror.com`.
+
+**faster-whisper**, default `medium` (`si run --model`). The first run downloads it. To fetch it first:
+
+```sh
+hf download Systran/faster-whisper-medium
+```
+
+https://huggingface.co/Systran/faster-whisper-medium
+
+Other names the library accepts (`tiny`, `base`, `small`, `large-v3`, and the `.en` variants) use `Systran/faster-whisper-<name>`. Pass that name as `--model`.
+
+**WhisperKit**, default `large-v3-v20240930_turbo` (the main `voicememo-whisper` command). The first transcribe downloads it. To fetch it first:
+
+```sh
+hf download argmaxinc/whisperkit-coreml --include "openai_whisper-large-v3-v20240930_turbo/*"
+```
+
+https://huggingface.co/argmaxinc/whisperkit-coreml
+
+**pyannote**, `pyannote/speaker-diarization-community-1` (local diarization). Accept the conditions on the model page, then `hf auth login`. The first local diarize downloads it. To fetch the pipeline repo first:
+
+```sh
+hf download pyannote/speaker-diarization-community-1
+```
+
+https://huggingface.co/pyannote/speaker-diarization-community-1
+
+**whisper.cpp**, `ggml-large-v3-turbo-q5_0.bin`, 574,041,195 bytes. This program does not download it. To fetch it:
+
+```sh
+hf download ggerganov/whisper.cpp ggml-large-v3-turbo-q5_0.bin --local-dir .
+```
+
+https://huggingface.co/ggerganov/whisper.cpp
+
+**MOSS**, `MOSS-Transcribe-Diarize-Q5_K_M.gguf`, 700,314,304 bytes. This program does not download it. `transcribe-cli` must be on `PATH` or passed with `--asr-cli`. To fetch the file:
+
+```sh
+hf download handy-computer/MOSS-Transcribe-Diarize-gguf MOSS-Transcribe-Diarize-Q5_K_M.gguf --local-dir .
+```
+
+https://huggingface.co/handy-computer/MOSS-Transcribe-Diarize-gguf
+
+Pass either saved file with `--asr-model-path`. Another file from the same repository is fine if you pass its path instead.
+
+```sh
+voicememo-whisper si run /path/to/meeting.m4a \
+  --asr-backend whisper-cpp \
+  --asr-model-path ./ggml-large-v3-turbo-q5_0.bin
+
+voicememo-whisper si run /path/to/meeting.m4a \
+  --asr-backend moss \
+  --asr-model-path ./MOSS-Transcribe-Diarize-Q5_K_M.gguf
+```
+
+**paraformer-large** (Chinese) and **sensevoice-small** (English) stay on the configured server. This program does not download them.
 
 `--place auto|local|remote` is accepted by `voicememo-whisper` and
 `voicememo-whisper si run`. `auto` keeps the configured transcription
