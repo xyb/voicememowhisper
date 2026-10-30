@@ -94,6 +94,8 @@ def run(
     output_dir: Path | None = None,
     output_transcript_dir: Path | None = None,
     skip_identify: bool = False,
+    repair_untimed: bool = False,
+    repair_min_window_sec: float = 0,
     from_step: int | str = 1,
     to_step: int | str = 5,
     force: bool = False,
@@ -143,6 +145,9 @@ def run(
     to_n = resolve_step(to_step)
     if from_n > to_n:
         raise ValueError(f"from_step ({from_n}) must be <= to_step ({to_n})")
+
+    if repair_untimed and (from_n > 4 or to_n != 5):
+        raise ValueError("untimed repair requires merge and render in range")
 
     # Lazy ML imports — keep `si --help` working without the extra installed.
     from . import speaker_embed
@@ -440,6 +445,35 @@ def run(
     elif 3 <= to_n:
         _require_cache(diarization_path, 2)
         diar_obj = contracts.Diarization.from_json(diarization_path)
+
+    # Explicit recovery for HTTP servers that return text without timestamps.
+    # Use real diarization windows; never spread words across invented times.
+    if repair_untimed:
+        from .untimed_repair import needs_repair, repair, preserve_original
+        assert transcript_obj is not None and diar_obj is not None
+        if needs_repair(transcript_obj):
+            if asr_backend not in ("openai-audio", "openai_audio"):
+                raise ValueError("untimed repair supports only openai-audio")
+            import json
+            from dataclasses import asdict
+            from .asr_backends.openai_audio import OpenAIAudioConfig, transcribe
+            cfg_dict = dict(asr_backend_config or {})
+            cfg_dict.setdefault("language", language)
+            repair_cfg = OpenAIAudioConfig(**cfg_dict)
+            if repair_cfg.resolved_model != transcript_obj.model:
+                raise ValueError("repair model differs from cached transcript model")
+            recovered = repair(
+                audio_path, transcript_obj, diar_obj,
+                run_dir / "untimed-repair-windows",
+                lambda clip: transcribe(clip, repair_cfg)[0],
+                cache_key=json.dumps(asdict(repair_cfg), sort_keys=True),
+                progress=lambda line: print(line, flush=True),
+                min_window_sec=repair_min_window_sec,
+            )
+            preserve_original(transcript_path)
+            recovered.to_json(transcript_path)
+            transcript_obj = recovered
+            print("untimed repair complete: speaker-window timestamps; not word alignment")
 
     # ── Stage 3: Identify ────────────────────────────────────────────
     # Pre-load identification from cache if downstream stages need it but
