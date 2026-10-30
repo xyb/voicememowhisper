@@ -531,7 +531,7 @@ def run(
         assert transcript_obj is not None and diar_obj is not None
         print(f"{_stage_header(4,'merge')} starting...")
         t0 = time.monotonic()
-        pipeline_name = f"faster-whisper({model}) + pyannote-community-1"
+        pipeline_name = f"{transcript_obj.backend}({transcript_obj.model}) + pyannote-community-1"
         if identification_obj:
             pipeline_name += " + speaker-library"
         merged_obj = mod_merge.merge(
