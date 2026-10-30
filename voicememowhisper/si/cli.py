@@ -232,6 +232,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
             output_dir=_path_or_default(args.output, DEFAULT_OUTPUT),
             output_transcript_dir=_path_or_none(args.output_transcript),
             skip_identify=args.skip_identify,
+            repair_untimed=getattr(args, "repair_untimed", False),
+            repair_min_window_sec=getattr(args, "repair_min_window_sec", 0),
             from_step=args.from_step,
             to_step=args.to_step,
             force=args.force,
@@ -1302,6 +1304,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help=f"Start step. Name (one of {', '.join(STEP_NAMES)}) or number 1-{len(STEPS)}. Default: 1.")
     sr.add_argument("--to", dest="to_step", default=str(len(STEPS)),
                     help=f"End step (inclusive). Same format as --from. Default: {len(STEPS)}.")
+    sr.add_argument("--repair-min-window-sec", type=float, default=0,
+                    help="Mark shorter repair windows as explicit gaps instead of "
+                         "requesting ASR (default: 0, recognize every window).")
+    sr.add_argument("--repair-untimed", action="store_true",
+                    help="Re-transcribe untimed HTTP text in existing speaker windows. "
+                         "Makes additional requests; preserves the original transcript.")
     sr.add_argument("--force", action="store_true",
                     help="Re-run in-window steps even if cached output exists.")
     sr.add_argument("--skip-identify", action="store_true",
