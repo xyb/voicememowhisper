@@ -87,6 +87,8 @@ _HTTP_KEY_MAP = {
     "host_header": "asr_host_header",
     "response_format": "asr_response_format",
     "timeout_sec": "asr_timeout_sec",
+    "max_audio_sec": "asr_max_audio_sec",
+    "overlap_sec": "asr_overlap_sec",
 }
 
 # [asr.ws] → CLI namespace keys for the ws-funasr backend.
@@ -260,6 +262,8 @@ def build_pipeline_kwargs(merged: dict[str, Any]) -> dict[str, Any]:
             ("asr_host_header", "host_header"),
             ("asr_response_format", "response_format"),
             ("asr_timeout_sec", "timeout_sec"),
+            ("asr_max_audio_sec", "max_audio_sec"),
+            ("asr_overlap_sec", "overlap_sec"),
         ):
             if merged_key in merged:
                 cfg[http_key] = merged[merged_key]

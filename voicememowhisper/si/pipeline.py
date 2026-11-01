@@ -273,7 +273,10 @@ def run(
                     transcript_obj, raw_info = mod_openai_audio.transcribe(
                         audio_path, cfg
                     )
+                contracts._dump_json(raw_info, transcript_path.with_suffix(".requests.json"))
                 transcript_obj.to_json(transcript_path)
+                if raw_info.get("overlap_review_required"):
+                    prog.note("overlap hypotheses preserved; boundary text needs review or untimed repair")
                 prog.note(
                     f"{len(transcript_obj.segments)} segments in "
                     f"{raw_info['wall_clock_sec']}s, "
@@ -465,7 +468,7 @@ def run(
             recovered = repair(
                 audio_path, transcript_obj, diar_obj,
                 run_dir / "untimed-repair-windows",
-                lambda clip: transcribe(clip, repair_cfg)[0],
+                lambda clip: transcribe(clip, repair_cfg),
                 cache_key=json.dumps(asdict(repair_cfg), sort_keys=True),
                 progress=lambda line: print(line, flush=True),
                 min_window_sec=repair_min_window_sec,

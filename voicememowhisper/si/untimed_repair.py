@@ -76,9 +76,12 @@ def repair(audio: Path, original: Transcript, diarization: Diarization,
             [audio_hash, cache_key, start, end], sort_keys=True).encode()).hexdigest()
         cached = cache_dir / (digest + '.json')
         text = None
+        request_info = {}
         if cached.exists():
             try:
-                candidate = json.loads(cached.read_text())['text']
+                cached_data = json.loads(cached.read_text())
+                candidate = cached_data['text']
+                request_info = cached_data.get('request_info') or {}
                 if isinstance(candidate, str) and candidate.strip():
                     text = candidate
             except (ValueError, KeyError, TypeError):
@@ -88,13 +91,23 @@ def repair(audio: Path, original: Transcript, diarization: Diarization,
                 clip = Path(temp) / 'clip.wav'
                 cut(audio, start, end, clip)
                 result = recognize(clip)
+                if isinstance(result, tuple):
+                    result, raw_info = result
+                    request_info = {
+                        'window_start_sec': start, 'window_end_sec': end,
+                        'overlap_review_required': raw_info.get('overlap_review_required', False),
+                        'absolute_chunk_offsets': [start + c['offset_sec'] for c in raw_info.get('chunks', [])],
+                        'asr': raw_info,
+                    }
                 text = ' '.join(s.text for s in result.segments).strip()
             if text:
                 with tempfile.NamedTemporaryFile(mode='w', dir=cache_dir,
                                                  delete=False) as handle:
                     temporary = Path(handle.name)
-                    json.dump({'text': text}, handle, ensure_ascii=False)
+                    json.dump({'text': text, 'request_info': request_info}, handle, ensure_ascii=False)
                 os.replace(temporary, cached)
+        if request_info.get('overlap_review_required') and progress:
+            progress(f'untimed repair {index}/{len(windows)} overlap hypotheses preserved; boundary text needs review')
         if text:
             recognized_count += 1
         segments.append(Segment(start, end, text or GAP))

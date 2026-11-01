@@ -304,3 +304,32 @@ Add tests under `tests/test_asr_backend_<protocol>.py` that mock
 
 See `contracts.CanonicalTranscript` and `contracts.Divergence` —
 those types already exist and are the intended output of step 3.
+
+
+### Bound HTTP audio requests
+
+The OpenAI-compatible backend decodes audio to mono 16 kHz PCM and sends
+overlapping pieces serially. The default piece limit is 120 seconds, including
+a 2-second overlap. Set `--asr-overlap-sec` or `[asr.http] overlap_sec` to
+change the overlap. It must be nonnegative and below the piece limit. Set
+`--asr-max-audio-sec 60` on `si run` or `si transcribe`, or add
+`max_audio_sec = 60` under `[asr.http]` in the TOML config. The standalone
+backend command uses `--max-audio-sec`. The accepted range is 1 to 3600
+seconds; stay at or below the server's advertised input limit.
+
+Only one decoded piece is held in memory. Only words with identical text and source timestamps in adjacent overlapping
+pieces are deduplicated. Otherwise both boundary hypotheses are preserved
+and marked for review;
+the adapter does not guess which repeated text to delete. Original chunk
+transcripts are retained in stage metadata. Piece timestamps are shifted back
+to the original recording timeline, including the final partial piece. A
+failed request or decoder error fails the entire ASR stage. Text-only
+responses retain untimed markers so `--repair-untimed` can still recover
+speaker-window timing. No failed recording is silently truncated or marked
+complete. Existing successful stage caches retain their original meaning;
+use a new run directory when verifying this request setting.
+
+Splitting limits input memory but can reduce context at a piece boundary.
+It does not make model transcription or word timestamps exact. Keep the
+original audio for later review. Services also need their own resource and
+admission limits because another client can bypass this adapter.

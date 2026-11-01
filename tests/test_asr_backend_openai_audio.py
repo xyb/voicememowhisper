@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import wave
 from pathlib import Path
 from unittest import mock
 
@@ -19,7 +20,7 @@ from voicememowhisper.si.asr_backends.openai_audio import (
     OpenAIAudioConfig,
     _encode_multipart,
     _segments_from_openai_response,
-    transcribe,
+    _transcribe_single as transcribe,
 )
 
 
@@ -91,7 +92,7 @@ def test_segments_from_plain_json_fallback() -> None:
     assert len(segs) == 1
     assert segs[0].text == "only one line"
     assert segs[0].start == 0.0
-    assert segs[0].end == pytest.approx(7.5)
+    assert segs[0].end == 0.0
     assert segs[0].words is None
 
 
@@ -122,7 +123,9 @@ class _FakeResponse:
 
 def _make_audio(tmp_path: Path) -> Path:
     audio = tmp_path / "meeting.m4a"
-    audio.write_bytes(b"\x00\x01\x02")
+    with wave.open(str(audio), "wb") as w:
+        w.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+        w.writeframes(b"\0\0" * 32000)
     return audio
 
 

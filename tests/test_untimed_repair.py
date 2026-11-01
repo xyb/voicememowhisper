@@ -108,3 +108,27 @@ def test_short_windows_remain_visible_without_inventing_words(tmp_path):
                     cut, min_window_sec=2)
     assert [s.text for s in result.segments] == [SHORT, 'ok']
     assert needs_repair(result)
+
+
+def test_nested_request_info_survives_window_cache(tmp_path):
+    original = transcript([Segment(0, 0, 'original')])
+    d = Diarization('sample', 'test', 'test', 1, [SpeakerSegment(10, 13, 'S0')])
+    messages = []
+    def cut(source, start, end, target):
+        target.write_bytes(b'sample')
+    def recognize(clip):
+        return transcript([Segment(0, 0, 'recognized')]), {
+            'overlap_review_required': True,
+            'chunks': [{'offset_sec': 0}, {'offset_sec': 1.5}],
+        }
+    repair(Path('sample.wav'), original, d, tmp_path, recognize, cut, progress=messages.append)
+    import json
+    info = json.loads(next(tmp_path.glob('*.json')).read_text())['request_info']
+    assert info['absolute_chunk_offsets'] == [10, 11.5]
+    assert info['window_end_sec'] == 13
+    assert any('needs review' in m for m in messages)
+    messages.clear()
+    def forbidden(clip):
+        pytest.fail('cache should preserve metadata without reprocessing')
+    repair(Path('sample.wav'), original, d, tmp_path, forbidden, cut, progress=messages.append)
+    assert any('needs review' in m for m in messages)

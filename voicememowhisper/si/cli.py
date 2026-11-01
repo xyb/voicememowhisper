@@ -78,6 +78,8 @@ def _build_asr_backend_kwargs(args: argparse.Namespace) -> dict:
         "asr_host_header",
         "asr_response_format",
         "asr_timeout_sec",
+        "asr_max_audio_sec",
+        "asr_overlap_sec",
         "asr_ws_url",
         "asr_ws_idle_timeout_sec",
         "asr_ws_connect_timeout_sec",
@@ -1142,6 +1144,10 @@ def _add_asr_backend_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--asr-response-format", dest="asr_response_format", default=None,
                    choices=["json", "verbose_json", "text", "srt", "vtt"],
                    help="openai-audio response format (default: verbose_json)")
+    p.add_argument("--asr-overlap-sec", dest="asr_overlap_sec", type=float, default=None,
+                   help="Overlap seconds between adjacent HTTP audio pieces (default: 2)")
+    p.add_argument("--asr-max-audio-sec", dest="asr_max_audio_sec", type=float, default=None,
+                   help="Maximum decoded audio seconds per HTTP request (default: 120); long audio is split serially")
     p.add_argument("--asr-timeout-sec", dest="asr_timeout_sec", type=float, default=None,
                    help="openai-audio per-request timeout in seconds (default: 600)")
     from .asr_backends.moss import download_hint as moss_download_hint

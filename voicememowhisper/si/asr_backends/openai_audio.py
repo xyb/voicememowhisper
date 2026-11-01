@@ -92,6 +92,8 @@ class OpenAIAudioConfig:
     host_header: str | None = None
     language: str | None = "zh"
     response_format: str = "verbose_json"
+    overlap_sec: float = 2.0
+    max_audio_sec: float = 120.0
     timeout_sec: float = 600.0
     # Extra multipart fields the server may accept (prompt, temperature,
     # vendor extensions). None values are dropped before sending.
@@ -200,7 +202,7 @@ def _segments_from_openai_response(payload: dict[str, Any]) -> list[contracts.Se
       ``start`` / ``end`` / ``text``.
     - Some servers (e.g. if the client asked for ``json`` not
       ``verbose_json``) return only top-level ``text`` with no segments —
-      we emit one synthetic segment spanning the whole recording.
+      we retain one untimed text segment for explicit timing recovery.
 
     Word-level timestamps are read from top-level ``words`` (the OpenAI
     shape) and bucketed into the segment whose time range contains them.
@@ -212,8 +214,7 @@ def _segments_from_openai_response(payload: dict[str, Any]) -> list[contracts.Se
         text = _clean_text(payload.get("text") or "")
         if not text:
             return []
-        duration = float(payload.get("duration") or 0.0)
-        return [contracts.Segment(start=0.0, end=duration, text=text, words=None)]
+        return [contracts.Segment(start=0.0, end=0.0, text=text, words=None)]
 
     # Bucket words into their segment (or leave as None on that segment
     # if the server didn't return word timings).
@@ -268,7 +269,13 @@ def _segments_from_openai_response(payload: dict[str, Any]) -> list[contracts.Se
 # ───────── main entry ──────────────────────────────────────────────────
 
 
-def transcribe(
+def transcribe(audio_path: Path, config: OpenAIAudioConfig):
+    """Decode bounded pieces, send serial requests, and restore source offsets."""
+    from .audio_chunks import transcribe_chunks
+    return transcribe_chunks(audio_path, config, _transcribe_single)
+
+
+def _transcribe_single(
     audio_path: Path,
     config: OpenAIAudioConfig,
 ) -> tuple[contracts.Transcript, dict[str, Any]]:
@@ -389,6 +396,9 @@ def _cli(argv: list[str] | None = None) -> int:
         choices=["json", "verbose_json", "text", "srt", "vtt"],
         help="server response format (default: verbose_json for timestamps)",
     )
+    ap.add_argument("--overlap-sec", type=float, default=2.0, help="Adjacent piece overlap seconds (default: 2)")
+    ap.add_argument("--max-audio-sec", type=float, default=120.0,
+                    help="Maximum decoded audio seconds per HTTP request (default: 120)")
     ap.add_argument(
         "--timeout-sec", type=float, default=600.0, help="per-request timeout"
     )
@@ -408,6 +418,8 @@ def _cli(argv: list[str] | None = None) -> int:
         language=args.language,
         response_format=args.response_format,
         timeout_sec=args.timeout_sec,
+        max_audio_sec=args.max_audio_sec,
+        overlap_sec=args.overlap_sec,
     )
 
     try:
@@ -417,6 +429,7 @@ def _cli(argv: list[str] | None = None) -> int:
         return 2
 
     if args.output:
+        contracts._dump_json(raw_info, args.output.with_suffix(".requests.json"))
         transcript.to_json(args.output)
         print(f"wrote {args.output} ({raw_info['num_segments']} segments)")
     else:
